@@ -12,7 +12,8 @@ test('report checks pass only for the matching nonce and measured quote',()=>{co
 const stale=checkReport(report(nonce),'ef'.repeat(32));assert.equal(stale.checks[1].pass,false);assert.equal(stale.checks[3].pass,false);
 const changed=report(nonce);changed.gateway_attestation.info.tcb_info.app_compose='{"sample":false}';assert.equal(checkReport(changed,nonce).checks[2].pass,false);
 const forged=report(nonce);forged.gateway_attestation.intel_quote='00'.repeat(700);assert.equal(checkReport(forged,nonce).checks[0].pass,false);
-assert.equal(checkReport({},nonce).checks.some(c=>c.pass),false);});
+assert.equal(checkReport({},nonce).checks.some(c=>c.pass),false);
+const text=report(nonce);text.gateway_attestation.info.tcb_info=JSON.stringify(text.gateway_attestation.info.tcb_info);assert.equal(checkReport(text,nonce).checks[2].pass,true);});
 test('attestation generates a fresh nonce for every request',async()=>{const [a,b]=await Promise.all([attestation(),attestation()]);assert.notEqual(a.nonce,b.nonce);assert.ok(a.checks.every(c=>c.pass));});
 test('inference result flows into the review and the hashed receipt',async()=>{const delivery=await deliver({title:'Report',brief:'Prepare report',agent:'Atlas · Research'});assert.equal(delivery.inference.chatId,'chatcmpl-stub');assert.equal(delivery.inference.signature.signature,'0xstub');
 let s=transition(initial,{action:'create',amount:20,title:'Report',brief:'Prepare report',agent:'Atlas · Research'});const id=s.jobs[0].id;s=transition(s,{action:'complete',id,delivery});assert.match(s.jobs[0].deliverable,/Stub delivery/);s=transition(s,{action:'quote',id,quote:await quote(s.jobs[0])});s=transition(s,{action:'pay',id});assert.equal(s.receipts[0].inference.model,'stub/model');assert.equal(s.receipts[0].settlementQuote.dry,true);assert.equal(s.receipts[0].hardwareAttested,false);});

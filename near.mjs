@@ -24,11 +24,11 @@ export async function quote(job){
 export function checkReport(report,nonce){
  const g=report.gateway_attestation,quoteBytes=Buffer.from(g?.intel_quote||'','hex');
  const tdx=quoteBytes.length>632&&quoteBytes.readUInt16LE(0)===4&&quoteBytes.readUInt32LE(4)===0x81;
- const compose=g?.info?.tcb_info?.app_compose,m=report.model_attestations?.[0];
+ const tcb=g?.info?.tcb_info,compose=(typeof tcb==='string'?JSON.parse(tcb):tcb)?.app_compose,m=report.model_attestations?.[0];
  return {checks:[
   {label:'Report is an Intel TDX v4 quote',pass:tdx},
   {label:'Quote is bound to the nonce this server generated',pass:tdx&&quoteBytes.subarray(568,632).toString('hex')===g.signing_address+nonce},
-  {label:'Quote measures the published gateway configuration',pass:tdx&&typeof compose==='string'&&quoteBytes.subarray(232,280).toString('hex')==='01'+sha(compose)+'00'.repeat(15)},
+  {label:'Quote matches the gateway configuration in the report',pass:tdx&&typeof compose==='string'&&quoteBytes.subarray(232,280).toString('hex')==='01'+sha(compose)+'00'.repeat(15)},
   {label:'Model report answers the same nonce',pass:m?.nonce===nonce}
  ],signingAddress:g?.signing_address||null,quoteSha256:quoteBytes.length?sha(quoteBytes):null,model:m?.model||model(),modelProvider:m?.provider||null,tcbStatus:m?.tcb_status||null,gpuVerdict:m?.gpu_verdict||null,dcapVerified:false};
 }

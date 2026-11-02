@@ -18,7 +18,7 @@ export function transition(current,c){
  else if(c.action==='pay'){
  if(j.status!=='Review')throw Error('Job must be awaiting review.');if(s.freeze)throw Error('Payments are frozen.');if(j.amount>s.limit)throw Error('Payment exceeds your limit.');if(j.amount>s.balance)throw Error('Insufficient balance.');
  s.balance=(Math.round(s.balance*100)-Math.round(j.amount*100))/100;s.spent=(Math.round(s.spent*100)+Math.round(j.amount*100))/100;j.status='Paid';
- const r={id:randomUUID(),job:j.title,jobId:j.id,amount:j.amount,agent:j.agent,date:new Date().toISOString(),policy:{limit:s.limit,approvedBy:'local-owner'},mode:'simulation',hardwareAttested:false,inference:j.inference||null,settlementQuote:j.quote||null,previousHash:s.receipts[0]?.hash||null};s.receipts.unshift({...r,hash:hash(r)});
+ const r={id:randomUUID(),job:j.title,jobId:j.id,amount:j.amount,agent:j.agent,date:new Date().toISOString(),policy:{limit:s.limit,approvedBy:'local-owner'},mode:c.settlement?.network||'simulation',hardwareAttested:false,inference:j.inference||null,settlementQuote:j.quote||null,settlement:c.settlement||null,previousHash:s.receipts[0]?.hash||null};s.receipts.unshift({...r,hash:hash(r)});
  }else throw Error('Unknown action.');
  }s.updatedAt=new Date().toISOString();return s;
 }

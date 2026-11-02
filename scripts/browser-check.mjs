@@ -1,5 +1,6 @@
 import {chromium} from 'playwright';
 import {spawn} from 'node:child_process';
+import {request} from 'node:http';
 import {mkdtemp,rm,mkdir} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import assert from 'node:assert/strict';
@@ -10,7 +11,8 @@ const server=spawn(process.execPath,['server.mjs'],{env:{...process.env,PORT:'30
 let browser;
 try{
 await new Promise((resolve,reject)=>{server.stdout.once('data',resolve);server.once('error',reject);server.once('exit',code=>reject(Error('Server exited: '+code)))});
-browser=await chromium.launch(process.env.CHROME_PATH ? {executablePath:process.env.CHROME_PATH} : {});const page=await browser.newPage({viewport:{width:1440,height:1000}});const errors=[];page.on('pageerror',e=>errors.push(e.message));
+browser=await chromium.launch(process.env.CHROME_PATH ? {executablePath:process.env.CHROME_PATH} : {});const page=await browser.newPage({viewport:{width:1440,height:1000}});const errors=[];page.on('pageerror',e=>errors.push(e.message));page.on('console',m=>{if(m.type()==='error'&&/Content Security Policy/.test(m.text()))errors.push(m.text())});
+await new Promise((done,fail)=>{const r=request({host:'127.0.0.1',port:3099,path:'//',headers:{Host:'localhost:3099'}},res=>{res.resume();res.once('end',done)});r.once('error',fail);r.end()});
 await page.goto('http://localhost:3099');await page.getByRole('heading',{name:'Business, quietly in motion.'}).waitFor();
 const act=async data=>(await page.request.post('http://localhost:3099/api/action',{headers:{'X-Nocturne':'local'},data})).json();const big={action:'create',amount:10000,title:'Reserve',brief:'Holds budget',agent:'Atlas · Research'};await act(big);const held=await act(big);await page.reload();
 await page.getByRole('button',{name:'Create job',exact:false}).click();await page.getByLabel('Job title').fill('Too large');await page.getByLabel('Brief',{exact:true}).fill('Over budget');await page.getByLabel('Budget (USDC)').fill('10000');await page.locator('#job-form button[type=submit]').click();await page.locator('#form-error').getByText('Budget exceeds uncommitted balance.').waitFor();for(const j of held.jobs.slice(0,2))await act({action:'cancel',id:j.id});

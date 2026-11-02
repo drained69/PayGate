@@ -1,0 +1,4 @@
+# cargo-near normally sets --cfg near. Without it near-sdk compiles its local
+# fallbacks and every contract panic loses its message.
+[target.wasm32-unknown-unknown]
+rustflags = ["--cfg", "near", "--check-cfg", "cfg(near)", "-C", "link-arg=-s"]
