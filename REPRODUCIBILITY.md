@@ -6,7 +6,14 @@ The README has the step-by-step walkthrough.
 
 ## Data and trust boundaries
 
-This is a single-user local application. The server binds only to loopback, rejects unexpected Host and cross-origin mutation requests, serializes mutations, and uses atomic file replacement. It is not a hosted multi-user service. Local processes and the operating-system user can access the workspace. Storage is not encrypted. Use sample business data.
+This is a single-user local application. The server binds only to loopback, rejects unexpected Host and cross-origin mutation requests, serializes mutations, and uses atomic file replacement. With `PUBLIC_URL` set, the server runs in hosted mode instead:
+
+- Each visitor gets an in-memory workspace, tied to an HttpOnly, Secure cookie and discarded after 24 hours or on restart.
+- Actions, report checks, agent runs and payments are rate limited per client address.
+- Visitors cannot freeze or reconfigure the shared vault.
+- On-chain job ids carry a workspace prefix, so visitors never collide on the contract's one-payment-per-job rule.
+
+Local processes and the operating-system user can access the workspace. Storage is not encrypted. Use sample business data.
 
 Money is represented with cent precision during arithmetic. Budgets cannot overcommit the treasury. Completed jobs can be paid once; frozen payments and payments above the limit are rejected on the server. Receipts include policy, amount, timestamp, previous hash, and SHA-256 hash. These hashes detect changes relative to a retained trusted hash; they are not signatures and cannot stop someone with disk access from rewriting the entire chain.
 

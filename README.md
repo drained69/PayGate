@@ -2,6 +2,8 @@
 
 Nocturne lets a company give an AI agent a budget without giving it control of the money. A NEAR smart contract holds the funds and enforces the owner's limits, so even a fully hijacked agent cannot overspend or pay an attacker.
 
+**Live demo:** https://paygate-production-d611.up.railway.app. Each visitor gets a separate workspace that resets after 24 hours. The attack demo runs locally, see [See an attack fail](#see-an-attack-fail-under-a-minute).
+
 **The problem:** an AI agent that can pay for things can be tricked into paying the wrong person. Text hidden in a document or brief can instruct it to send funds, and rules written in the agent's prompt or app code stop working once the agent is compromised. Nocturne puts the rules where the agent cannot reach them.
 
 ## What is real and what is simulated
@@ -90,6 +92,32 @@ NEAR_OWNER_ACCOUNT=your-account.testnet NEAR_OWNER_KEY=ed25519:... npm run vault
 
 Then start the app with `NEAR_OWNER_KEY` still set, using `npm run dev`. Receipts then link to the testnet explorer. Each owner account can create one vault, because the script uses fixed `vault`, `agent` and `worker` sub-accounts. Use a new owner account to deploy again.
 
+### Deploy to Railway
+
+The repository includes a `Dockerfile`. Setting `PUBLIC_URL` switches the server to hosted mode:
+
+- It listens on all interfaces.
+- Each visitor gets an in-memory workspace.
+- Requests are rate limited per visitor address.
+- Visitors cannot freeze the shared vault or change its limits. Freeze and **Maximum payment** apply only to their own session.
+
+```sh
+railway init --name paygate
+railway add --service paygate
+railway domain --service paygate
+railway variables --service paygate --set PUBLIC_URL=https://your-domain.up.railway.app
+railway up --service paygate
+```
+
+Without a vault, payments on the hosted copy are simulated. To pay from your testnet vault, set the vault's settings and the owner key as service variables:
+
+```sh
+railway variables --service paygate --set "NOCTURNE_CHAIN_JSON=$(cat data/chain.json)"
+railway variables --service paygate --set NEAR_OWNER_KEY=ed25519:...
+```
+
+Every visitor then shares that vault, so its daily limit caps what the whole demo can spend each day. Then run `npm run check:deployed -- https://your-domain.up.railway.app`. It drives the deployed copy in a browser and checks payments, receipts, the enclave report, session isolation and the mobile layout.
+
 ## Configuration
 
 All settings are optional. See [.env.example](.env.example). The app reads environment variables only and does not load `.env` by itself.
@@ -103,6 +131,8 @@ All settings are optional. See [.env.example](.env.example). The app reads envir
 | `NEAR_OWNER_ACCOUNT` | none | Testnet owner, for `vault:deploy` only |
 | `NEAR_OWNER_KEY` | none | Owner key, used to approve, freeze and change limits |
 | `NEAR_RPC_URL` | testnet RPC | Node used by `vault:deploy` |
+| `NOCTURNE_CHAIN_JSON` | none | Vault settings as JSON, instead of `data/chain.json` |
+| `PUBLIC_URL` | none | Public https address; turns on hosted mode |
 | `PORT` | `3000` | Local port |
 | `DATA_DIR` | `./data` | Workspace location |
 
