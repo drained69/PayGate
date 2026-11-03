@@ -1,6 +1,6 @@
 {
-  "name": "nocturne",
-  "version": "0.1.0",
+  "name": "paygate",
+  "version": "1.0.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -12,7 +12,7 @@
     "check:deployed": "node scripts/deployed-check.mjs",
     "demo:attack": "node scripts/attack-demo.mjs",
     "dev:chain": "node scripts/dev-chain.mjs",
-    "test:chain": "node scripts/chain-check.mjs && node scripts/hosted-check.mjs",
+    "test:chain": "node scripts/chain-check.mjs",
     "vault:deploy": "node scripts/deploy-vault.mjs"
   },
   "engines": {

@@ -1,4 +1,4 @@
-//! Spending vault for an AI agent. The agent may only ask for payments; the
+//! PayGate spending vault for an AI agent. The agent may only ask for payments; the
 //! rules below decide. Owner methods need one attached yoctoNEAR, which a
 //! function-call access key cannot send, so a leaked agent key cannot use them.
 use near_sdk::store::{IterableMap, IterableSet, LookupSet};
@@ -50,7 +50,7 @@ pub struct Policy {
     pub balance: NearToken,
 }
 
-#[near(event_json(standard = "nocturne_vault"))]
+#[near(event_json(standard = "paygate_vault"))]
 pub enum Event {
     #[event_version("1.0.0")]
     PaymentSent { id: u64, recipient: AccountId, amount: NearToken, job_id: String },

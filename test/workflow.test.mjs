@@ -1,10 +1,36 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {transition,hash} from '../domain.mjs';
-import {initial} from '../seed.mjs';
-test('freeze and limits reject payments without modifying ledger',()=>{
-for(const extra of [{freeze:true},{limit:100}]){const s={...structuredClone(initial),...extra};assert.throws(()=>transition(s,{action:'pay',id:'NC-104'}));assert.equal(s.balance,24850);}
+import {transition,empty,verify,committed} from '../domain.mjs';
+const job={action:'create',amount:0.25,title:'Report',brief:'Prepare report',payee:'payee.near'};
+const settlement={network:'sandbox',vault:'v.near',paymentId:1,route:'auto',txHash:'tx'};
+test('a job runs from creation to a hash-linked receipt, and is paid once',()=>{
+ let s=transition(empty(),job);const id=s.jobs[0].id;assert.match(id,/^PG-[a-f0-9]{8}$/);
+ assert.throws(()=>transition(s,{action:'paid',id,settlement}),/awaiting review/);
+ s=transition(s,{action:'deliver',id,text:'Report delivered at https://example.com/r'});assert.equal(s.jobs[0].source,'Recorded by owner');
+ s=transition(s,{action:'paid',id,settlement});assert.equal(s.jobs[0].status,'Paid');assert.throws(()=>transition(s,{action:'paid',id,settlement}));
+ s=transition(s,{...job,title:'Second'});s=transition(transition(s,{action:'deliver',id:s.jobs[0].id,text:'x'}),{action:'paid',id:s.jobs[0].id,settlement});assert.equal(s.receipts[0].previousHash,s.receipts[1].hash);
+ assert.equal(s.receipts[0].currency,'NEAR');assert.equal(s.receipts[0].amount,0.25);assert.ok(verify(s.receipts));
+ const forged=structuredClone(s.receipts);forged[0].amount=99;assert.equal(verify(forged),false);
 });
-test('settlement is once only, with hash-linked evidence',()=>{const s=transition(initial,{action:'pay',id:'NC-104'});assert.equal(s.balance,24670);assert.throws(()=>transition(s,{action:'pay',id:'NC-104'}));const {hash:digest,...body}=s.receipts[0];assert.equal(hash(body),digest);assert.equal(body.hardwareAttested,false);});
-test('validates amounts and available funds',()=>{for(const amount of [-1,NaN,Infinity,1.111,10001])assert.throws(()=>transition(initial,{action:'create',amount}));assert.throws(()=>transition({...initial,balance:500},{action:'create',amount:20,title:'a',brief:'b',agent:'Atlas · Research'}));});
-test('full job lifecycle and cancellation',()=>{let s=transition(initial,{action:'create',amount:20,title:'Report',brief:'Prepare report',agent:'Atlas · Research'});const id=s.jobs[0].id;assert.throws(()=>transition(s,{action:'pay',id}));s=transition(s,{action:'complete',id});assert.match(s.jobs[0].deliverable,/DEMO/);s=transition(s,{action:'cancel',id});assert.equal(s.jobs[0].status,'Cancelled');assert.throws(()=>transition(s,{action:'pay',id}));});
+test('large payments wait for approval and a rejection returns the job to review',()=>{
+ let s=transition(empty(),job);const id=s.jobs[0].id;s=transition(s,{action:'deliver',id,text:'done'});
+ s=transition(s,{action:'requested',id,payment:{paymentId:7}});assert.equal(s.jobs[0].status,'Awaiting approval');assert.throws(()=>transition(s,{action:'cancel',id}));
+ s=transition(s,{action:'released',id});assert.equal(s.jobs[0].status,'Review');assert.equal(s.jobs[0].payment,undefined);
+});
+test('validates amounts, payees and the vault limits passed in by the server',()=>{
+ for(const amount of [-1,0,NaN,Infinity,0.00001,10001])assert.throws(()=>transition(empty(),{...job,amount}),/0.0001 to 10,000/);
+ for(const payee of ['','Bad Name','a','x'.repeat(65),undefined])assert.throws(()=>transition(empty(),{...job,payee}),/payee/);
+ assert.throws(()=>transition(empty(),{...job,allowed:['other.near']}),/allowlist/);
+ assert.throws(()=>transition(empty(),{...job,max:0.2}),/per-payment limit/);
+ const s=transition(empty(),{...job,available:0.4});assert.equal(committed(s),0.25);
+ assert.throws(()=>transition(s,{...job,available:0.4}),/not already committed/);
+ assert.throws(()=>transition(empty(),{...job,title:' '}),/title/);
+});
+test('owner deliveries, cancellation and payee labels',()=>{
+ let s=transition(empty(),job);const id=s.jobs[0].id;
+ assert.throws(()=>transition(s,{action:'deliver',id,text:''}),/delivery/);
+ s=transition(s,{action:'cancel',id});assert.equal(s.jobs[0].status,'Cancelled');assert.equal(committed(s),0);
+ s=transition(s,{action:'label',account:'payee.near',label:'Research'});assert.equal(s.payees['payee.near'],'Research');
+ s=transition(s,{action:'label',account:'payee.near',label:''});assert.equal(s.payees['payee.near'],undefined);
+ assert.throws(()=>transition(s,{action:'label',account:'NOPE',label:'x'}));
+});

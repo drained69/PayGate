@@ -1,13 +1,13 @@
 import {test,before,after} from 'node:test';
 import assert from 'node:assert/strict';
-import {transition} from '../domain.mjs';
-import {initial} from '../seed.mjs';
-import {quote,attestation,deliver,checkReport,integrations} from '../near.mjs';
+import {usdValue,attestation,deliver,checkReport,integrations} from '../near.mjs';
 import {startStub,report} from '../scripts/near-stub.mjs';
+import {toYocto,toNear,isAccountId} from '../chain.mjs';
 let stub;const nonce='cd'.repeat(32);
 before(async()=>{stub=await startStub();process.env.NEAR_AI_URL=stub.url;process.env.ONECLICK_URL=stub.url;process.env.NEAR_AI_API_KEY='test-key'});
 after(async()=>{await stub.close();delete process.env.NEAR_AI_API_KEY});
-test('quotes are always dry and use six-decimal USDC amounts',async()=>{const q=await quote({amount:25.5});assert.equal(stub.seen.quotes.at(-1).dry,true);assert.equal(stub.seen.quotes.at(-1).amount,'25500000');assert.equal(q.dry,true);assert.equal(q.amountOut,'24.99');});
+test('payments are valued with a dry NEAR to USDC quote in yoctoNEAR',async()=>{const q=await usdValue({amount:1.5,payee:'payee.near'});const sent=stub.seen.quotes.at(-1);assert.equal(sent.dry,true);assert.equal(sent.amount,'1500000000000000000000000');assert.equal(sent.originAsset,'nep141:wrap.near');assert.equal(sent.recipient,'near');assert.equal(q.usd,3.83)});
+test('NEAR amounts convert exactly',()=>{assert.equal(toYocto(0.0001),'100000000000000000000');assert.equal(toYocto(1234.5678),'1234567800000000000000000000');assert.equal(toNear('2500000000000000000000000'),2.5);assert.ok(isAccountId('a-b_c.near'));assert.equal(isAccountId('A.near'),false)});
 test('report checks pass only for the matching nonce and measured quote',()=>{const pass=checkReport(report(nonce),nonce);assert.ok(pass.checks.every(c=>c.pass));assert.equal(pass.dcapVerified,false);
 const stale=checkReport(report(nonce),'ef'.repeat(32));assert.equal(stale.checks[1].pass,false);assert.equal(stale.checks[3].pass,false);
 const changed=report(nonce);changed.gateway_attestation.info.tcb_info.app_compose='{"sample":false}';assert.equal(checkReport(changed,nonce).checks[2].pass,false);
@@ -15,7 +15,6 @@ const forged=report(nonce);forged.gateway_attestation.intel_quote='00'.repeat(70
 assert.equal(checkReport({},nonce).checks.some(c=>c.pass),false);
 const text=report(nonce);text.gateway_attestation.info.tcb_info=JSON.stringify(text.gateway_attestation.info.tcb_info);assert.equal(checkReport(text,nonce).checks[2].pass,true);});
 test('attestation generates a fresh nonce for every request',async()=>{const [a,b]=await Promise.all([attestation(),attestation()]);assert.notEqual(a.nonce,b.nonce);assert.ok(a.checks.every(c=>c.pass));});
-test('inference result flows into the review and the hashed receipt',async()=>{const delivery=await deliver({title:'Report',brief:'Prepare report',agent:'Atlas · Research'});assert.equal(delivery.inference.chatId,'chatcmpl-stub');assert.equal(delivery.inference.signature.signature,'0xstub');
-let s=transition(initial,{action:'create',amount:20,title:'Report',brief:'Prepare report',agent:'Atlas · Research'});const id=s.jobs[0].id;s=transition(s,{action:'complete',id,delivery});assert.match(s.jobs[0].deliverable,/Stub delivery/);s=transition(s,{action:'quote',id,quote:await quote(s.jobs[0])});s=transition(s,{action:'pay',id});assert.equal(s.receipts[0].inference.model,'stub/model');assert.equal(s.receipts[0].settlementQuote.dry,true);assert.equal(s.receipts[0].hardwareAttested,false);});
+test('inference returns the delivery with its hashes and signature',async()=>{const d=await deliver({title:'Report',brief:'Prepare report'});assert.equal(d.inference.chatId,'chatcmpl-stub');assert.equal(d.inference.signature.signature,'0xstub');assert.match(d.text,/Stub delivery/);assert.match(stub.seen.chats.at(-1).messages[0].content,/PayGate/)});
 test('integration list reports the key state and never the key',()=>{assert.equal(integrations()[0].state,'live');assert.equal(JSON.stringify(integrations()).includes('test-key'),false);delete process.env.NEAR_AI_API_KEY;assert.equal(integrations()[0].state,'off');process.env.NEAR_AI_API_KEY='test-key';});
-test('unreachable services fail with a readable error',async()=>{process.env.ONECLICK_URL='http://127.0.0.1:9';await assert.rejects(quote({amount:1}),/unreachable/);process.env.ONECLICK_URL=stub.url;});
+test('unreachable services fail with a readable error',async()=>{process.env.ONECLICK_URL='http://127.0.0.1:9';await assert.rejects(usdValue({amount:1,payee:'a.near'}),/unreachable/);process.env.ONECLICK_URL=stub.url;});
