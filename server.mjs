@@ -109,7 +109,7 @@ async function devSign(url,req,res){
  try{const r=await devWallet.signAndSendTransaction({receiverId:tx.receiverId,actions:tx.actions});callback.searchParams.set('transactionHashes',r.transaction.hash)}catch(e){callback.searchParams.set('errorCode','failed');callback.searchParams.set('errorMessage',reason(e))}
  res.writeHead(303,{Location:callback.pathname+callback.search});res.end();return true;
 }
-const routes={'/':'index.html','/app.js':'app.js','/style.css':'style.css'},types={html:'text/html',js:'text/javascript',css:'text/css'};
+const routes={'/':'index.html','/app.js':'app.js','/docs.js':'docs.js','/style.css':'style.css'},types={html:'text/html',js:'text/javascript',css:'text/css'};
 http.createServer(async(req,res)=>{
 const json=(status,data,headers={})=>{res.writeHead(status,{'Content-Type':'application/json','Cache-Control':'no-store',...headers});res.end(JSON.stringify(data))};
 res.setHeader('X-Content-Type-Options','nosniff');res.setHeader('X-Frame-Options','DENY');res.setHeader('Referrer-Policy','no-referrer');res.setHeader('Content-Security-Policy',"default-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'");

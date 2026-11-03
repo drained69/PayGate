@@ -24,7 +24,7 @@ try{
  await create('Too large',0.6);await page.locator('#form-error').getByText("per-payment limit of 0.5 NEAR").waitFor();await page.locator('#job-dialog .close').click();
  await create('Small job',0.05);await page.locator('#job-dialog').waitFor({state:'hidden'});
  await row('Small job').getByRole('button',{name:'Run agent'}).click();await row('Small job').getByRole('button',{name:'Review & pay'}).click();
- await page.getByText('Written on NEAR AI Cloud · stub/model').waitFor();await page.getByText('about $3.83').waitFor();
+ await page.getByText('Written on NEAR AI Cloud · stub/model').waitFor();await page.getByText('≈ $3.83').waitFor();
  await page.getByRole('button',{name:'Pay 0.05 NEAR'}).click();await page.locator('#review-error').getByText('The vault is frozen').waitFor();await page.getByRole('button',{name:'Close review'}).click();
  await nav('Controls');await viaWallet(page.getByRole('button',{name:'Unfreeze in wallet'}).click());await page.getByText('Vault status: Active').waitFor();
  const start=await balance(payee);
@@ -32,7 +32,7 @@ try{
  assert.equal(await balance(payee)-start,BigInt(toYocto(0.05)));
  await create('Large job',0.3);await page.locator('#job-dialog').waitFor({state:'hidden'});
  await row('Large job').getByRole('button',{name:'Record delivery'}).click();await page.getByLabel('Delivery').fill('Report: https://example.com/report.pdf');await page.getByRole('button',{name:'Save delivery'}).click();await toast('Delivery recorded');
- await row('Large job').getByRole('button',{name:'Review & pay'}).click();await page.getByText('Recorded by owner').waitFor();await page.getByRole('button',{name:'Request payment'}).click();
+ await row('Large job').getByRole('button',{name:'Review & pay'}).click();await page.locator('#review-dialog').getByText('Recorded by owner').waitFor();await page.getByRole('button',{name:'Request payment'}).click();
  await viaWallet(page.getByRole('button',{name:'Approve in wallet'}).click());await toast('Payment approved and sent.');
  assert.equal(await balance(payee)-start,BigInt(toYocto(0.35)));
  await create('Rejected job',0.2);await page.locator('#job-dialog').waitFor({state:'hidden'});await row('Rejected job').getByRole('button',{name:'Record delivery'}).click();await page.getByLabel('Delivery').fill('Draft');await page.getByRole('button',{name:'Save delivery'}).click();await toast('Delivery recorded');
@@ -50,7 +50,7 @@ try{
  const limits=(await (await page.request.get(url+'/api/vault')).json()).limits;assert.deepEqual(limits,{auto:0.2,max:0.4,daily:1});
  await page.getByLabel('NEAR account').fill('second.test.near');await viaWallet(page.getByRole('button',{name:'Add in wallet'}).click());await page.locator('form[data-account="second.test.near"]').waitFor();
  await viaWallet(page.locator('[data-account="second.test.near"][data-action="remove-payee"]').click());await toast('Wallet transaction confirmed');assert.equal(await page.locator('form[data-account="second.test.near"]').count(),0);
- await nav('Treasury');await page.getByText('Waiting on-chain for your approval').waitFor();await page.getByText('0.2 NEAR to Research contractor').waitFor();
+ await nav('Treasury');await page.getByText('Waiting on-chain for your approval').waitFor();await page.getByRole('row').filter({hasText:'Payment #'}).filter({hasText:'Research contractor'}).filter({hasText:'0.2 NEAR'}).first().waitFor();
  const ownerBefore=await balance(config.owner);await page.getByLabel('Amount (NEAR)').fill('1');await viaWallet(page.getByRole('button',{name:'Withdraw in wallet'}).click());await toast('Wallet transaction confirmed');assert.ok(await balance(config.owner)-ownerBefore>BigInt(toYocto(0.99)));
  // An interrupted request is resumed only if the pending payment has exactly this job's terms.
  const agent=accountFor(config.rpcUrl,config.agent,config.agentKey),ask=(id,amount)=>agent.callFunction({contractId:config.vault,methodName:'request_payment',args:{recipient:payee,amount:toYocto(amount),job_id:state.workspace+':'+id},gas:60000000000000n});

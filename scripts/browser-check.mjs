@@ -15,9 +15,11 @@ try{
  await page.goto(url);await page.getByRole('heading',{name:'Sign in to PayGate'}).waitFor();
  assert.equal((await page.request.get(url+'/api/state')).status(),401);
  await page.setViewportSize({width:390,height:844});assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);await page.setViewportSize({width:1440,height:1000});
+ await page.getByRole('button',{name:'Read the docs'}).click();await page.getByRole('heading',{name:'What PayGate is'}).waitFor();await page.locator('.docs-nav').getByRole('button',{name:'Deploy to mainnet'}).click();await page.getByText('--yes-mainnet').first().waitFor();await page.getByRole('button',{name:/Next\s*Security model/}).click();await page.getByRole('heading',{name:'Security model'}).waitFor();
+ await page.locator('nav [data-page="Overview"]').click();await page.getByRole('heading',{name:'Sign in to PayGate'}).waitFor();
  await page.getByLabel('Password').fill('not it');await page.getByRole('button',{name:'Sign in'}).click();await page.getByText('Wrong password.').waitFor();
  await page.getByLabel('Password').fill(password);await page.getByRole('button',{name:'Sign in'}).click();
- await page.getByRole('heading',{name:'Agent payments, on your terms.'}).waitFor();await page.getByText('No vault is connected.').first().waitFor();await page.getByText('◉ No vault connected').waitFor();
+ await page.getByRole('heading',{name:'Agent payments, on your terms.'}).waitFor();await page.getByText('No vault is connected.').first().waitFor();await page.locator('#mode-text').getByText('No vault connected').waitFor();
  assert.equal(await page.getByRole('button',{name:'Create job'}).count(),0);
  await page.locator('nav [data-page="Controls"]').click();await page.getByText('npm run vault:deploy').waitFor();
  await page.locator('nav [data-page="Evidence"]').click();await page.getByRole('button',{name:'Verify receipt chain'}).click();await page.getByText('All 0 receipt hashes and links match.').waitFor();
@@ -28,5 +30,5 @@ try{
  await mkdir('test-results',{recursive:true});await page.locator('nav [data-page="Overview"]').click();await page.screenshot({path:'test-results/desktop.png',fullPage:true});
  await page.setViewportSize({width:390,height:844});await page.screenshot({path:'test-results/mobile.png',fullPage:true});assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
  await page.getByRole('button',{name:'Sign out'}).click();await page.getByRole('heading',{name:'Sign in to PayGate'}).waitFor();assert.equal((await page.request.get(url+'/api/state')).status(),401);
- assert.deepEqual(errors,[]);console.log('Browser checks passed: sign-in, wrong password, setup guidance without a vault, receipt verification, enclave report, navigation before data loads, sign-out, mobile layout.');
+ assert.deepEqual(errors,[]);console.log('Browser checks passed: docs while signed out, sign-in, wrong password, setup guidance without a vault, receipt verification, enclave report, navigation before data loads, sign-out, mobile layout.');
 }finally{await browser?.close();server.kill();await new Promise(resolve=>server.exitCode!==null?resolve():server.once('exit',resolve));await rm(dir,{recursive:true,force:true});await stub.close()}
