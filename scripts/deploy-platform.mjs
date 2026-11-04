@@ -24,5 +24,9 @@ Costs:     about ${globalNear.toFixed(2)} NEAR burned to publish the vault code,
 Remainder: about ${(Number(fund)-globalNear-factoryNear).toFixed(2)} NEAR stays in the factory to cover refunds`);
 if(network==='mainnet'&&!process.argv.includes('--yes-mainnet'))stop('\nThis spends real NEAR. Check the summary, then run again with: npm run platform:deploy -- --yes-mainnet');
 const {vaultHash}=await deployPlatform({rpcUrl,operator,factoryName:name,factoryNear:fund});
-console.log(`\nPlatform live on ${network}. Factory ${factory} has no keys; vaults run code ${vaultHash}.
+// Checks the result on-chain before telling anyone to use it.
+const opt={finality:'final'},keys=(await provider.viewAccessKeyList({accountId:factory,blockQuery:opt})).keys,config=await provider.callFunction({contractId:factory,method:'get_config',args:{},blockQuery:opt});
+if(keys.length!==0)stop(`${factory} still has ${keys.length} key(s). Do not use it.`);
+if(config.vault_code!==vaultHash)stop(`${factory} pins ${config.vault_code}, not ${vaultHash}. Do not use it.`);
+console.log(`\nPlatform live on ${network}. Verified on-chain: ${factory} has no keys and pins vault code ${vaultHash}.
 Set on your server: NEAR_NETWORK=${network} PAYGATE_FACTORY=${factory}`);

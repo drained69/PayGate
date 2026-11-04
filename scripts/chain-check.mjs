@@ -1,8 +1,8 @@
 import {chromium} from 'playwright';
 import assert from 'node:assert/strict';
 import {mkdir} from 'node:fs/promises';
-import {JsonRpcProvider,KeyPair} from 'near-api-js';
-import {toYocto,signNep413} from '../chain.mjs';
+import {JsonRpcProvider,KeyPair,decodeTransaction} from 'near-api-js';
+import {toYocto,signNep413,accountFor} from '../chain.mjs';
 import {startChainApp} from './dev-chain.mjs';
 import {startStub} from './near-stub.mjs';
 // The public product end to end on a local NEAR node: wallet sign-in, a vault from the factory, payments,
@@ -78,6 +78,14 @@ try{
  assert.match((await post(other,{action:'pay',id:rejected})).error,/Create your vault first/);
  assert.match((await post(other,{action:'vault-create',name:'acme',fund:1,auto:0.1,max:0.5,daily:1,payees:[]})).error,/taken/);
  assert.match((await post(other,{action:'vault-confirm',txHash:s.workspace.receipts[0].settlement.txHash})).error,/Start creating a vault first/);
+ // A wallet that signs but never reports back: PayGate finds the new vault on-chain without a hash.
+ const link=(await post(other,{action:'vault-create',name:'bobco',fund:1,auto:0.1,max:0.5,daily:1,payees:[payee]})).url,tx=decodeTransaction(Buffer.from(new URL(link,url).searchParams.get('transactions'),'base64'));
+ await accountFor(app.rpcUrl,bob,customers[bob]).signAndSendTransaction({receiverId:tx.receiverId,actions:tx.actions});
+ assert.equal((await post(other,{action:'vault-confirm'})).vault.vault,`bobco.${factory}`);
+ assert.ok(Number(await provider.callFunction({contractId:`bobco.${factory}`,method:'get_policy',args:{},blockQuery:{finality:'optimistic'}}).then(p=>BigInt(p.balance)))>0.69e24,'the rest of the deposit reaches the vault');
+ // A large deposit on a taken name comes back in full, even though it is far larger than the factory's buffer.
+ const bobBefore=await balance(bob);await accountFor(app.rpcUrl,bob,customers[bob]).callFunctionRaw({contractId:factory,methodName:'create_vault',args:{name:'acme',agent_key:KeyPair.fromRandom('ed25519').getPublicKey().toString(),limits:{auto_limit:toYocto(0.1),max_payment:toYocto(0.5),daily_limit:toYocto(1)},recipients:[]},deposit:BigInt(toYocto(10)),gas:200000000000000n});
+ let lost;for(let i=0;i<15;i++){lost=bobBefore-await balance(bob);if(lost<BigInt(toYocto(0.01)))break;await new Promise(d=>setTimeout(d,1000))}assert.ok(lost<BigInt(toYocto(0.01)),'a failed creation must be refunded');
  // Forged sign-ins: someone else's signature for an account, and a nonce used twice.
  const ch=await (await other.request.post(url+'/api/auth/challenge',{headers:{'X-PayGate':'1'},data:{}})).json(),payload={message:ch.message,nonce:Buffer.from(ch.nonce,'base64'),recipient:ch.recipient,callbackUrl:ch.callbackUrl};
  const bobKey=customers[bob],forged={accountId:alice,publicKey:KeyPair.fromString(bobKey).getPublicKey().toString(),signature:signNep413(bobKey,payload),nonce:ch.nonce};
@@ -89,5 +97,5 @@ try{
  await nav('Controls');await page.screenshot({path:'test-results/chain-controls.png',fullPage:true});
  await page.setViewportSize({width:390,height:844});await nav('Jobs');await page.screenshot({path:'test-results/chain-mobile.png',fullPage:true});assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
  assert.deepEqual(errors,[]);
- console.log('Chain checks passed: public pages, wallet sign-in, vault from the factory (keyless vault, restricted agent, owner on-chain), keys kept from the browser, payee labels, freeze, NEAR AI key, limit errors, agent delivery, USD quote, automatic and approved payments, rejection, receipts and transactions, forged approvals and injected results, limits, payees, withdrawal, customer isolation, taken names, forged and replayed sign-ins, data deletion, mobile layout.');
+ console.log('Chain checks passed: public pages, wallet sign-in, vault from the factory (keyless vault, restricted agent, owner on-chain), keys kept from the browser, payee labels, freeze, NEAR AI key, limit errors, agent delivery, USD quote, automatic and approved payments, rejection, receipts and transactions, forged approvals and injected results, limits, payees, withdrawal, customer isolation, taken names, vault found on-chain without a hash, full refund of a large failed deposit, forged and replayed sign-ins, data deletion, mobile layout.');
 }finally{await browser?.close();await app.stop();await stub.close()}

@@ -15,13 +15,14 @@ export function transition(current,c){
   const amount=units(c.amount);
   const job={id:'PG-'+randomUUID().slice(0,8),title:text(c.title,'title',100),brief:text(c.brief,'brief',2000),payee:c.payee,amount:amount/1e4,status:'Working',created:new Date().toISOString()};
   if(!isAccountId(c.payee))throw Error('Choose a payee account.');
+  if(s.jobs.length>=2000)throw Error('This workspace has reached its limit of 2,000 jobs.');
   if(c.allowed&&!c.allowed.includes(c.payee))throw Error('That payee is not on the vault allowlist.');
   if(c.max!==undefined&&job.amount>c.max)throw Error(`Budget exceeds the vault's per-payment limit of ${c.max} NEAR.`);
   if(c.available!==undefined&&amount>Math.round((c.available-committed(s))*1e4))throw Error('Budget exceeds the vault balance not already committed to open jobs.');
   s.jobs.unshift(job);
  }else if(c.action==='label'){
   if(!isAccountId(c.account))throw Error('Invalid account.');
-  if(c.label==='')delete s.payees[c.account];else s.payees[c.account]=text(c.label,'label',60);
+  if(c.label==='')delete s.payees[c.account];else{if(!(c.account in s.payees)&&Object.keys(s.payees).length>=200)throw Error('You can label at most 200 payees.');s.payees[c.account]=text(c.label,'label',60)}
  }else{
   const j=s.jobs.find(j=>j.id===c.id);if(!j)throw Error('Job not found.');
   if(c.action==='complete'||c.action==='deliver'){

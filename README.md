@@ -249,6 +249,8 @@ npm run check:deployed -- https://your-domain.up.railway.app
 - Have the Terms of use and Privacy notice in `public/legal.js` reviewed by a lawyer for your jurisdiction.
 - Get the contracts independently audited.
 - Turn on Postgres backups and keep `PAYGATE_SECRET` in a password manager.
+- Set `NEAR_RPC_URL` to a dedicated RPC provider, with a second one after a comma for failover. The free public endpoint is rate limited.
+- Rehearse on testnet first: deploy the platform there, create a vault with your wallet, pay, approve and withdraw.
 
 ## Configuration
 
@@ -259,7 +261,7 @@ npm run check:deployed -- https://your-domain.up.railway.app
 | `DATABASE_URL` | none | Postgres. Without it, data is stored in files in `DATA_DIR` |
 | `PAYGATE_SECRET` | generated locally | Encrypts customer keys. Required when hosted; at least 32 characters |
 | `PUBLIC_URL` | none | Public https address. Turns on hosted mode. `RAILWAY_PUBLIC_DOMAIN` also works |
-| `NEAR_RPC_URL` | FastNEAR | RPC endpoint. Required for `sandbox` |
+| `NEAR_RPC_URL` | FastNEAR free RPC | RPC endpoint. Several comma-separated URLs fail over to each other. Use a dedicated provider for a public mainnet service. Required for `sandbox` |
 | `NEAR_AI_MODEL` | `qwen/qwen3.5-397b-a17b` | Model for inference and attestation |
 | `DATA_DIR` | `./data` | Local data folder |
 | `PORT`, `HOST` | `3000`; `127.0.0.1` locally, `0.0.0.0` hosted | Listen address |
@@ -347,7 +349,7 @@ POST requests need the header `X-PayGate: 1`. Account endpoints need a session.
 
 | Command | What it checks | Needs |
 | --- | --- | --- |
-| `npm test` | 20 tests: job rules, NEAR services, encryption, NEP-413, server security, rate limits, startup refusals, file store | Nothing |
+| `npm test` | 21 tests: job rules, workspace caps, NEAR services, encryption, NEP-413, server security, rate limits, startup refusals, file store | Nothing |
 | `cd contract && cargo test` | 21 vault tests | Rust 1.97.1 |
 | `cd contract/factory && cargo test` | 5 factory tests | Rust 1.97.1 |
 | `npm run test:postgres` | Schema, row-locked concurrent updates, rollback, sessions, nonces, deletion, server start | Docker or `DATABASE_URL` |

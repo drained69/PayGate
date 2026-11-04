@@ -104,7 +104,7 @@ railway up --service paygate</code></pre>
 <tr><td><code>DATABASE_URL</code></td><td>Postgres. Without it, data is kept in files in <code>DATA_DIR</code></td></tr>
 <tr><td><code>PAYGATE_SECRET</code></td><td>At least 32 characters. Required when hosted</td></tr>
 <tr><td><code>PUBLIC_URL</code></td><td>The public https address</td></tr>
-<tr><td><code>NEAR_RPC_URL</code></td><td>Optional RPC endpoint</td></tr>
+<tr><td><code>NEAR_RPC_URL</code></td><td>RPC endpoint. Comma-separated URLs fail over. Use a dedicated provider for mainnet</td></tr>
 </tbody></table>`},
 {id:'security',title:'Security model',html:`
 <p class="eyebrow">Trust</p><h1>Security model</h1>

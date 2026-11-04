@@ -34,3 +34,7 @@ test('owner deliveries, cancellation and payee labels',()=>{
  s=transition(s,{action:'label',account:'payee.near',label:''});assert.equal(s.payees['payee.near'],undefined);
  assert.throws(()=>transition(s,{action:'label',account:'NOPE',label:'x'}));
 });
+test('a workspace cannot grow without bound',()=>{
+ const s=empty();s.jobs=Array.from({length:2000},(_,i)=>({id:'PG-'+i,status:'Cancelled',amount:1}));assert.throws(()=>transition(s,job),/2,000 jobs/);
+ const t=empty();for(let i=0;i<200;i++)t.payees[`p${i}.near`]='x';assert.throws(()=>transition(t,{action:'label',account:'new.near',label:'y'}),/200 payees/);assert.equal(transition(t,{action:'label',account:'p1.near',label:'z'}).payees['p1.near'],'z');
+});

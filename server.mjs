@@ -123,17 +123,21 @@ async function act(c,account,req){
   for(const p of payees){if(!isAccountId(p))throw Error(`${p} is not a valid NEAR account.`);if(!await factory.exists(p))throw Error(`${p} does not exist on ${network}. A payment to it would fail.`)}
   if(await factory.exists(`${c.name}.${factory.factory}`))throw Error(`The vault name ${c.name} is taken. Choose another.`);
   const agentKey=KeyPair.fromRandom('ed25519'),publicKey=agentKey.getPublicKey().toString();
-  await setProfile(p=>({...p,pending:{name:c.name,publicKey,agentKey:box.seal(agentKey.toString()),createdAt:new Date().toISOString()}}));
+  // Earlier attempts are kept: a wallet may still sign an older link, and its agent key must not be lost.
+  await setProfile(p=>({...p,pending:{name:c.name,publicKey,agentKey:box.seal(agentKey.toString()),createdAt:new Date().toISOString()},attempts:[{name:c.name,publicKey,agentKey:box.seal(agentKey.toString())},...(p.attempts||[])].slice(0,5)}));
   return {url:await factory.createLink({owner:account,name:c.name,agentKey:publicKey,limits,payees,fund:c.fund,callbackUrl:callbackFor(req)})};
  }
  if(c.action==='vault-confirm'){
   if(v)throw Error('You already have a vault.');
-  const p=profile.pending;if(!p)throw Error('Start creating a vault first.');
-  try{
-   const {vault,agent}=await factory.confirmCreated(c.txHash,{owner:account,name:p.name,agentKey:p.publicKey});
-   await setProfile(x=>{const n={...x,vault:{vault,agent,agentKey:p.agentKey,createdAt:new Date().toISOString()}};delete n.pending;return n});
-  }catch(e){if(/taken|was not/.test(e.message))await setProfile(x=>{delete x.pending;return x});throw e}
-  return snapshot(account);
+  const attempts=profile.attempts||(profile.pending?[profile.pending]:[]);if(!attempts.length)throw Error('Start creating a vault first.');
+  if(!factory)throw Error('This PayGate server has no factory configured yet.');
+  const save=(a,{vault,agent})=>setProfile(x=>{const n={...x,vault:{vault,agent,agentKey:a.agentKey,createdAt:new Date().toISOString()}};delete n.pending;delete n.attempts;return n});
+  // With a hash, the transaction is checked; without one, the chain itself is read. Either way the result must match an agent key PayGate issued.
+  if(!c.txHash){for(const a of attempts){const found=await factory.findCreated({owner:account,name:a.name,agentKey:a.publicKey});if(found){await save(a,found);return snapshot(account)}}throw Error('Your vault is not on-chain yet. If you signed in your wallet, wait a moment and check again.')}
+  let last;
+  for(const a of attempts){try{await save(a,await factory.confirmCreated(c.txHash,{owner:account,name:a.name,agentKey:a.publicKey}));return snapshot(account)}catch(e){last=e;if(/taken|was not/.test(e.message))break}}
+  if(/taken|was not/.test(last?.message))await setProfile(x=>{delete x.pending;delete x.attempts;return x});
+  throw last;
  }
  if(c.action==='vault-cancel'){await setProfile(x=>{delete x.pending;return x});return snapshot(account)}
  if(c.action==='ai-key'){

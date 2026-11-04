@@ -78,17 +78,19 @@ impl Factory {
         let me = env::current_account_id();
         let vault: AccountId = format!("{name}.{me}").parse().unwrap_or_else(|_| env::panic_str("Invalid vault name"));
         let agent: AccountId = format!("{name}-agent.{me}").parse().unwrap_or_else(|_| env::panic_str("Invalid vault name"));
-        let vault_fund = deposit.saturating_sub(AGENT_FUND);
         let args = json!({ "owner": owner, "agent": agent, "limits": limits, "recipients": recipients });
+        // Only the minimum travels with the creation. If it fails, that much is refunded to the factory
+        // in a later receipt, which the factory's buffer covers; the rest of the deposit never left.
         Promise::new(vault.clone())
             .create_account()
-            .transfer(vault_fund)
+            .transfer(MIN_VAULT_FUND)
             .use_global_contract(self.vault_code)
             .function_call("new", args.to_string().into_bytes(), NearToken::from_yoctonear(0), INIT_GAS)
             .then(Self::ext(me).with_static_gas(CALLBACK_GAS).on_vault(owner, vault, agent, agent_key, deposit))
     }
 
-    /// Creates the agent once the vault exists, or refunds the whole deposit if it does not.
+    /// Once the vault exists, sends it the rest of the deposit and creates the agent. If the vault
+    /// could not be created, refunds the whole deposit.
     #[private]
     pub fn on_vault(
         &mut self,
@@ -101,6 +103,10 @@ impl Factory {
         if !succeeded() {
             Event::VaultFailed { owner: owner.clone(), vault }.emit();
             return Promise::new(owner).transfer(deposit);
+        }
+        let rest = deposit.saturating_sub(AGENT_FUND).saturating_sub(MIN_VAULT_FUND);
+        if !rest.is_zero() {
+            Promise::new(vault.clone()).transfer(rest).detach();
         }
         let allowance = Allowance::limited(AGENT_ALLOWANCE).unwrap_or_else(|| env::panic_str("Invalid allowance"));
         Promise::new(agent.clone())

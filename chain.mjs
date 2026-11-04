@@ -1,6 +1,6 @@
 import {readFile} from 'node:fs/promises';
 import {createHash} from 'node:crypto';
-import {Account,JsonRpcProvider,KeyPair,KeyPairSigner,PublicKey,actions,createTransaction,encodeTransaction,baseDecode,baseEncode,nearToYocto} from 'near-api-js';
+import {Account,JsonRpcProvider,FailoverRpcProvider,KeyPair,KeyPairSigner,PublicKey,actions,createTransaction,encodeTransaction,baseDecode,baseEncode,nearToYocto} from 'near-api-js';
 const TGAS=1000000000000n,ONE_YOCTO=1n,GAS=60n*TGAS,UNIT=10n**20n;
 export const CODE=new URL('./contract/res/paygate_vault.wasm',import.meta.url);
 export const FACTORY_CODE=new URL('./contract/res/paygate_factory.wasm',import.meta.url);
@@ -8,7 +8,9 @@ export const NETWORKS={
  mainnet:{rpcUrl:'https://free.rpc.fastnear.com',wallet:'https://app.mynearwallet.com',explorer:'https://nearblocks.io/txns/'},
  testnet:{rpcUrl:'https://test.rpc.fastnear.com',wallet:'https://testnet.mynearwallet.com',explorer:'https://testnet.nearblocks.io/txns/'}
 };
-export const accountFor=(rpcUrl,id,secretKey)=>new Account(id,new JsonRpcProvider({url:rpcUrl}),KeyPairSigner.fromSecretKey(secretKey));
+// Several comma-separated RPC URLs fail over to each other, so one slow or rate-limited node does not stop payments.
+export function providerFor(rpcUrl){const urls=String(rpcUrl).split(',').map(u=>u.trim()).filter(Boolean);return urls.length>1?new FailoverRpcProvider(urls.map(url=>new JsonRpcProvider({url}))):new JsonRpcProvider({url:urls[0]})}
+export const accountFor=(rpcUrl,id,secretKey)=>new Account(id,providerFor(rpcUrl),KeyPairSigner.fromSecretKey(secretKey));
 // Node errors arrive in several shapes. Contract panics are reduced to the contract's own sentence.
 export function reason(e){const m=String(e?.message||e);return m.match(/Smart contract panicked: ([^"\n]+)/)?.[1]?.trim()||m.slice(0,300)}
 export const txHash=r=>r.transaction?.hash||r.transaction_outcome?.id;
@@ -31,7 +33,8 @@ export async function walletLink({provider,walletUrl,signer,receiver,method,args
 // Checks on-chain that `signer` really sent this call and that it succeeded. A wallet callback alone proves nothing.
 export async function checkTx(provider,hash,{signer,receiver,methods,check=()=>true,network}){
  if(!isHash(hash))throw Error('Invalid transaction hash.');
- let r;try{r=await provider.viewTransactionStatus({txHash:hash,accountId:signer,waitUntil:'EXECUTED_OPTIMISTIC'})}catch{throw Error('Transaction not found on '+network+'.')}
+ // A node can lag a few seconds behind the wallet's node, so a missing transaction is retried before giving up.
+ let r;for(let i=0;!r;i++){try{r=await provider.viewTransactionStatus({txHash:hash,accountId:signer,waitUntil:'EXECUTED_OPTIMISTIC'})}catch{if(i>=3)throw Error('Transaction not found on '+network+'. If you just signed it, try again in a minute.');await new Promise(d=>setTimeout(d,1500*(i+1)))}}
  const t=r.transaction,call=t?.actions?.[0]?.FunctionCall,args=call?JSON.parse(Buffer.from(call.args,'base64').toString()):null;
  if(t.signer_id!==signer||t.receiver_id!==receiver||![].concat(methods).includes(call?.method_name)||!check(args,call))throw Error('That transaction is not the expected action.');
  if(r.status?.SuccessValue===undefined)throw Error('The transaction failed: '+reason(JSON.stringify(r.status)));
@@ -68,12 +71,22 @@ export async function deployPlatform({rpcUrl,operator,factoryName='paygate',fact
  return {factory,vaultHash};
 }
 export function factoryClient({rpcUrl,network,factory,walletUrl}){
- const provider=new JsonRpcProvider({url:rpcUrl}),wallet=walletUrl||NETWORKS[network]?.wallet;
+ const provider=providerFor(rpcUrl),wallet=walletUrl||NETWORKS[network]?.wallet;
  return {
   provider,network,factory,walletUrl:wallet,
   config:()=>provider.callFunction({contractId:factory,method:'get_config',args:{},blockQuery:{finality:'optimistic'}}),
   exists:id=>provider.viewAccount({accountId:id,blockQuery:{finality:'optimistic'}}).then(()=>true,e=>/does not exist|UNKNOWN_ACCOUNT/i.test(String(e?.message||e))?false:Promise.reject(e)),
   createLink:({owner,name,agentKey,limits,payees,fund,callbackUrl})=>walletLink({provider,walletUrl:wallet,signer:owner,receiver:factory,method:'create_vault',args:{name,agent_key:agentKey,limits,recipients:payees},deposit:toYocto(fund),gas:200n*TGAS,callbackUrl}),
+  // Without a transaction hash: the vault counts if the chain shows it owned by this customer, with this agent,
+  // and the agent's only key is the one PayGate issued, limited to request_payment on that vault.
+  async findCreated({owner,name,agentKey}){
+   const vault=`${name}.${factory}`,agent=`${name}-agent.${factory}`,opt={finality:'optimistic'};
+   const policy=await provider.callFunction({contractId:vault,method:'get_policy',args:{},blockQuery:opt}).catch(()=>null);
+   if(policy?.owner!==owner||policy.agent!==agent)return null;
+   const keys=(await provider.viewAccessKeyList({accountId:agent,blockQuery:opt}).catch(()=>({keys:[]}))).keys;
+   const ok=keys.length===1&&keys[0].public_key===agentKey&&keys[0].access_key.permission?.FunctionCall?.receiver_id===vault;
+   return ok?{vault,agent}:null;
+  },
   // The vault counts only when the factory reports it created both accounts for this owner and this agent key.
   async confirmCreated(hash,{owner,name,agentKey}){
    const {outcome}=await checkTx(provider,hash,{signer:owner,receiver:factory,methods:'create_vault',check:a=>a?.name===name&&a?.agent_key===agentKey,network});
@@ -102,7 +115,7 @@ export async function provision({rpcUrl,owner,limits,payees=[],vaultNear='3',age
 }
 // One customer's vault, driven with that customer's agent key. Owner actions become wallet links.
 export function vaultClient(config){
- const {rpcUrl,vault,agent,owner,network}=config,net=NETWORKS[network]||{},provider=new JsonRpcProvider({url:rpcUrl}),agentAccount=accountFor(rpcUrl,agent,config.agentKey);
+ const {rpcUrl,vault,agent,owner,network}=config,net=NETWORKS[network]||{},provider=providerFor(rpcUrl),agentAccount=accountFor(rpcUrl,agent,config.agentKey);
  let queue=Promise.resolve();const serial=fn=>{const run=queue.then(fn);queue=run.catch(()=>{});return run};
  const view=(method,args={})=>provider.callFunction({contractId:vault,method,args,blockQuery:{finality:'optimistic'}});
  return {
