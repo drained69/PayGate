@@ -18,7 +18,7 @@ async function api(path,body){
 const ws=()=>state.workspace;
 async function refreshVault(){try{vault=state?.vault?await api('vault'):{configured:false}}catch(e){vault={configured:true,error:e.message}}}
 async function mutate(action,payload={},errors){
- try{state=await api('action',{action,...payload});await refreshVault();render();return true}
+ try{state=await api('action',{action,...payload});[integrations]=await Promise.all([api('integrations').catch(()=>integrations),refreshVault()]);render();return true}
  catch(e){if(errors)errors.textContent=e.message;else toast(e.message);return false}
 }
 function toast(t){$('#toast').textContent=t;$('#toast').classList.add('show');clearTimeout(toast.timer);toast.timer=setTimeout(()=>$('#toast').classList.remove('show'),5000)}
@@ -241,7 +241,7 @@ function render(){
    finally{b.disabled=false}});
  }
  $('#vault-hash-form')?.addEventListener('submit',async e=>{e.preventDefault();if(await mutate('vault-confirm',{txHash:String(new FormData(e.target).get('hash')).trim()},$('#vault-error')))toast('Your vault is live.')});
- $('#ai-form')?.addEventListener('submit',async e=>{e.preventDefault();if(await mutate('ai-key',{key:String(new FormData(e.target).get('key'))},$('#ai-error'))){integrations=await api('integrations').catch(()=>integrations);toast('NEAR AI key saved.')}});
+ $('#ai-form')?.addEventListener('submit',async e=>{e.preventDefault();if(await mutate('ai-key',{key:String(new FormData(e.target).get('key'))},$('#ai-error')))toast('NEAR AI key saved.')});
  $('#delete-form')?.addEventListener('submit',async e=>{e.preventDefault();try{await api('action',{action:'delete-account',confirm:String(new FormData(e.target).get('confirm')).trim()});state=null;page='Home';render();toast('Your data was deleted.')}catch(err){$('#delete-error').textContent=err.message}});
 }
 function dialog(id){let d=$('#'+id);if(!d){d=document.createElement('dialog');d.id=id;document.body.append(d)}return d}
@@ -273,7 +273,7 @@ document.addEventListener('click',async e=>{
  if(action==='logout'){await api('logout',{}).catch(()=>{});if(connector)await connector.disconnect().catch(()=>{});state=null;vault={configured:false};page='Home';render()}
  if(action==='vault-cancel'){await mutate('vault-cancel')}
  if(action==='vault-check'){b.disabled=true;if(await mutate('vault-confirm',{},$('#vault-error'))){page='Overview';render();toast('Your vault is live.')}b.disabled=false}
- if(action==='ai-remove'){if(await mutate('ai-key',{key:''})){integrations=await api('integrations').catch(()=>integrations);toast('NEAR AI key removed.')}}
+ if(action==='ai-remove'){if(await mutate('ai-key',{key:''}))toast('NEAR AI key removed.')}
  if(action==='verify'){try{const r=await api('verify');$('#verification').textContent=r.valid?` All ${r.count} receipt hashes and links match.`:' Receipt integrity check failed.'}catch(err){toast(err.message)}}
  if(action==='attest'){b.disabled=true;$('#attestation').innerHTML='<p>Fetching report…</p>';try{report=await api('attestation')}catch(err){report={error:err.message}}b.disabled=false;$('#attestation').innerHTML=reportHtml()}
  if(action==='export'){const blob=new Blob([JSON.stringify({account:state.account,vault:vault.vault||null,network:config.network,receipts:ws().receipts},null,2)],{type:'application/json'}),a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='paygate-receipts.json';a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1000)}

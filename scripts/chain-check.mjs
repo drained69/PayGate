@@ -33,6 +33,7 @@ try{
  await form.getByLabel('Payees').fill(payee);
  await viaWallet(page,()=>form.getByRole('button',{name:'Create vault in wallet'}).click());
  await toast('Your vault is live.');await page.getByRole('heading',{name:'Agent payments, on your terms.'}).waitFor();
+ assert.match(await page.locator('.row-item').filter({hasText:'NEAR spending vault'}).innerText(),/Connected/,'the services list must update once the vault exists');
  const keys=(await provider.viewAccessKeyList({accountId:vault,blockQuery:{finality:'optimistic'}})).keys;assert.equal(keys.length,0,'the vault must have no keys');
  const agentKeys=(await provider.viewAccessKeyList({accountId:agent,blockQuery:{finality:'optimistic'}})).keys;assert.deepEqual(agentKeys.map(k=>k.access_key.permission.FunctionCall?.method_names),[['request_payment']]);
  assert.equal((await provider.callFunction({contractId:vault,method:'get_policy',args:{},blockQuery:{finality:'optimistic'}})).owner,alice);
