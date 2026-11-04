@@ -40,11 +40,33 @@ async function viaWallet(getUrl,op){
  });
 }
 const firstHash=r=>String(r.transactionHashes||'').split(',')[0];
+// On testnet and mainnet, customers connect their own wallet (Meteor, HOT, Intear, Ledger and others) through NEAR Connect.
+// Each wallet runs in a sandboxed iframe; the page's CSP nonce lets only that code run.
+let connector;
+async function nearConnect(){
+ if(connector)return connector;
+ const {NearConnector}=await import('/vendor/near-connect.js');
+ connector=new NearConnector({network:config.network,features:{signMessage:true,signAndSendTransaction:true},excludedWallets:['mynearwallet'],cspNonce:document.querySelector('meta[name=csp-nonce]')?.content,providers:config.rpcUrl?{[config.network]:[config.rpcUrl]}:undefined,footerBranding:null});
+ return connector;
+}
+// The wallet must be signed in as the PayGate account, or the vault would reject the call anyway.
+async function walletFor(account){
+ const c=await nearConnect();
+ let found=await c.getConnectedWallet().catch(()=>null);
+ if(!found?.accounts?.some(a=>a.accountId===account)){await c.connect();found=await c.getConnectedWallet().catch(()=>null)}
+ if(!found?.accounts?.some(a=>a.accountId===account))throw new Error(`Your wallet is connected as ${found?.accounts?.[0]?.accountId||'another account'}. Switch it to ${account} and try again.`);
+ return found.wallet;
+}
+// Gets a transaction from the server, has the wallet sign it, and returns its hash for the server to check on-chain.
+async function signTx(getRequest,op){
+ if(config.walletUrl)return firstHash(await viaWallet(async()=>(await getRequest()).url,op));
+ const wallet=await walletFor(state.account),{transaction}=await getRequest();
+ const outcome=await wallet.signAndSendTransaction({...transaction,network:config.network});
+ return outcome?.transaction?.hash||outcome?.transaction_outcome?.id||'';
+}
 async function owner(kind,payload={},errors){
- try{
-  const r=await viaWallet(async()=>(await api('action',{action:'owner',kind,...payload})).url,{kind,id:payload.id});
-  await afterWallet({kind,id:payload.id},firstHash(r));
- }catch(e){if(errors)errors.textContent=e.message;else toast(e.message)}
+ try{await afterWallet({kind,id:payload.id},await signTx(()=>api('action',{action:'owner',kind,...payload}),{kind,id:payload.id}))}
+ catch(e){if(errors)errors.textContent=e.message||String(e);else toast(e.message||String(e))}
 }
 // A job payment counts only after the server finds the signed approval on-chain.
 async function afterWallet(op,tx){
@@ -56,12 +78,21 @@ async function afterWallet(op,tx){
 async function signIn(){
  const b=$('#signin');if(b)b.disabled=true;
  try{
-  let ch;
-  const r=await viaWallet(async()=>{ch=await api('auth/challenge',{});return `${ch.walletUrl}/sign-message?${new URLSearchParams({message:ch.message,nonce:ch.nonce,recipient:ch.recipient,callbackUrl:ch.callbackUrl})}`},{kind:'signin'});
-  const s=r.signedRequest||r;
+  let ch,s;
+  if(config.walletUrl){
+   const r=await viaWallet(async()=>{ch=await api('auth/challenge',{});return `${ch.walletUrl}/sign-message?${new URLSearchParams({message:ch.message,nonce:ch.nonce,recipient:ch.recipient,callbackUrl:ch.callbackUrl})}`},{kind:'signin'});
+   s=r.signedRequest||r;
+  }else{
+   // One approval in the wallet both connects it and signs PayGate's one-time sign-in message (NEP-413).
+   toast('Choose your wallet. The first connection can take a few seconds while it loads.');
+   const c=await nearConnect();ch=await api('auth/challenge',{});
+   const signed=new Promise(resolve=>c.once('wallet:signInAndSignMessage',e=>resolve(e.accounts?.[0]?.signedMessage)));
+   await c.connect({signMessageParams:{message:ch.message,recipient:ch.recipient,nonce:Uint8Array.from(atob(ch.nonce),x=>x.charCodeAt(0))}});
+   s=await signed;if(!s?.signature)throw new Error('The wallet did not sign the message. Try again or choose another wallet.');
+  }
   await api('auth/verify',{accountId:s.accountId,publicKey:s.publicKey,signature:s.signature,nonce:ch.nonce});
   page='Overview';await load();toast('Signed in as '+s.accountId+'.');
- }catch(e){toast(e.message)}finally{if(b)b.disabled=false}
+ }catch(e){toast(e?.message||String(e||'Sign-in was cancelled.'))}finally{if(b)b.disabled=false}
 }
 const committed=()=>ws().jobs.filter(j=>OPEN.includes(j.status)).reduce((s,j)=>s+j.amount,0);
 const payeeName=a=>ws().payees[a]?`${esc(ws().payees[a])} <span class="sub">${esc(a)}</span>`:esc(a);
@@ -83,7 +114,7 @@ function setupNotice(){
 function home(){
  const steps=[['01','Sign in with NEAR','Your wallet signs a message. No password, no email.'],['02','Create your vault','One transaction creates a vault you own and an agent that can only ask it for money.'],['03','Give the agent work','Jobs with a brief, an allowlisted payee and a budget.'],['04','Approve what matters','Small payments go out alone. Larger ones wait for your wallet.']];
  const features=[['shield','Rules on-chain','Payee allowlist, per-payment and daily limits, one payment per job and freeze are enforced by the vault contract, not by our servers.'],['key','Non-custodial','The vault belongs to your NEAR account and has no keys of its own. We never hold your owner key and cannot move your funds.'],['bolt','Restricted agent','The agent key can call one method, request_payment. Transfers, new keys and owner actions are rejected by NEAR itself.'],['check','Wallet approvals','Above your automatic limit, payments wait. Approve or reject them in your wallet; we check every signature on-chain.'],['doc','Evidence you can export','Every payment links to its NEAR transaction and a hash-linked receipt.'],['clock','Freeze in one signature','Stop every new and held payment at once. Withdraw to your account even while frozen.']];
- const faq=[['Can PayGate take my money?','No. Your vault is owned by your account and has no keys. The service holds only the agent key, which can request payments within your limits and only to your payees.'],['What does it cost?','PayGate charges nothing. You fund your own vault with at least 0.4 NEAR: 0.3 NEAR funds the agent account and its gas, and the rest stays in your vault. You also pay normal NEAR network fees.'],['What if the agent is tricked?','The worst a hijacked agent can do is spend up to your automatic limit per payment and your daily limit, only to payees you approved. Our attack demo tries 12 ways to steal funds; all are blocked.'],['Which wallets work?','Sign-in and approvals use MyNearWallet. For other wallets or NEAR CLI, sign the same call and paste the transaction hash.'],['Is it audited?','The contracts have unit tests and an end-to-end attack demo, but no independent audit yet. Start with small limits and a small balance.']];
+ const faq=[['Can PayGate take my money?','No. Your vault is owned by your account and has no keys. The service holds only the agent key, which can request payments within your limits and only to your payees.'],['What does it cost?','PayGate charges nothing. You fund your own vault with at least 0.4 NEAR: 0.3 NEAR funds the agent account and its gas, and the rest stays in your vault. You also pay normal NEAR network fees.'],['What if the agent is tricked?','The worst a hijacked agent can do is spend up to your automatic limit per payment and your daily limit, only to payees you approved. Our attack demo tries 12 ways to steal funds; all are blocked.'],['Which wallets work?','Any NEAR wallet listed when you sign in: Meteor, HOT, Intear, Nightly, Ledger, OKX and more, through NEAR Connect. You can also sign owner actions with NEAR CLI and paste the transaction hash.'],['Is it audited?','The contracts have unit tests and an end-to-end attack demo, but no independent audit yet. Start with small limits and a small balance.']];
  return `<div class="hero landing"><p class="eyebrow">Live on ${networkName()}</p><h1>Give your AI agent a budget it can't overspend.</h1><p class="lead">PayGate puts your agent's spending rules in a NEAR smart contract you own. The agent can only ask. The contract decides. You approve anything large in your own wallet.</p><div class="actions"><button class="primary" data-action="signin">Sign in with NEAR</button><button class="secondary" data-doc="how-it-works">How it works</button></div></div>`+
  `<section><div class="grid cols-4">${stat('Custody','None','Your account owns the vault')}${stat('Vault keys','0','Its code can never be swapped')}${stat('Agent methods','1','request_payment, nothing else')}${stat('Attacks blocked','12/12','In the open-source attack demo')}</div></section>`+
  `<section><div class="section-head"><div><p class="eyebrow">Getting started</p><h2>Four steps to a safe agent budget</h2></div></div><div class="grid cols-4 steps">${steps.map(([n,t,d])=>`<div class="step"><span class="num">${n}</span><h3>${t}</h3><p>${d}</p></div>`).join('')}</div></section>`+
@@ -205,7 +236,7 @@ function render(){
   vf.addEventListener('input',update);update();
   vf.addEventListener('submit',async e=>{e.preventDefault();const f=new FormData(vf),b=vf.querySelector('[type=submit]');b.disabled=true;$('#vault-error').textContent='';
    const payload={name:String(f.get('name')).trim(),fund:Number(f.get('fund')),auto:Number(f.get('auto')),max:Number(f.get('max')),daily:Number(f.get('daily')),payees:String(f.get('payees')).split(/[\s,]+/).filter(Boolean)};
-   try{const r=await viaWallet(async()=>(await api('action',{action:'vault-create',...payload})).url,{kind:'vault'});await afterWallet({kind:'vault'},firstHash(r))}
+   try{await afterWallet({kind:'vault'},await signTx(()=>api('action',{action:'vault-create',...payload}),{kind:'vault'}))}
    catch(err){state=await api('state').catch(()=>state);if(state.pending)render();if($('#vault-error'))$('#vault-error').textContent=err.message;else toast(err.message)}
    finally{b.disabled=false}});
  }
@@ -239,7 +270,7 @@ document.addEventListener('click',async e=>{
  if(action==='signin')return signIn();
  if(action==='new'){$('#form-error').textContent='';$('#payee-select').innerHTML=vault.recipients.map(a=>`<option value="${esc(a)}">${esc(ws().payees[a]?ws().payees[a]+' · '+a:a)}</option>`).join('');$('#budget-hint').textContent=`Up to ${near(vault.limits.max)} per payment · ${near(Math.max(0,vault.spendable-committed()))} available`;$('#job-dialog').showModal()}
  if(b.classList.contains('close')&&b.closest('#job-dialog'))$('#job-dialog').close();
- if(action==='logout'){await api('logout',{}).catch(()=>{});state=null;vault={configured:false};page='Home';render()}
+ if(action==='logout'){await api('logout',{}).catch(()=>{});if(connector)await connector.disconnect().catch(()=>{});state=null;vault={configured:false};page='Home';render()}
  if(action==='vault-cancel'){await mutate('vault-cancel')}
  if(action==='vault-check'){b.disabled=true;if(await mutate('vault-confirm',{},$('#vault-error'))){page='Overview';render();toast('Your vault is live.')}b.disabled=false}
  if(action==='ai-remove'){if(await mutate('ai-key',{key:''})){integrations=await api('integrations').catch(()=>integrations);toast('NEAR AI key removed.')}}
@@ -270,4 +301,4 @@ async function load(){
  let saved,op;try{saved=JSON.parse(sessionStorage.getItem('paygate-wallet')||'null');op=JSON.parse(sessionStorage.getItem('paygate-op')||'null');sessionStorage.removeItem('paygate-wallet');sessionStorage.removeItem('paygate-op')}catch{}
  if(saved?.status==='success'&&op?.kind&&op.kind!=='signin')await afterWallet(op,firstHash(saved));
 }
-try{config=await api('config');const s=await api('session');if(s.account)await load();else render()}catch(e){$('#content').innerHTML=`<div class="notice">Unable to reach PayGate: ${esc(e.message)}</div>`}
+try{config=await api('config');if(!config.walletUrl)nearConnect().catch(()=>{});const s=await api('session');if(s.account)await load();else render()}catch(e){$('#content').innerHTML=`<div class="notice">Unable to reach PayGate: ${esc(e.message)}</div>`}

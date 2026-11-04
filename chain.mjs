@@ -23,12 +23,14 @@ export const events=(outcome,standard)=>(outcome?.receipts_outcome||[]).flatMap(
 // NEP-297 `data` may be one object or a list, depending on the emitter.
 const items=e=>[].concat(e?.data??[]);
 const found=(outcome,event,id)=>events(outcome,'paygate_vault').some(e=>e.event===event&&items(e).some(d=>d.id===id));
-// An unsigned call for a wallet's /sign page. The wallet replaces the key and nonce with the signer's own.
+// A call for the signer's wallet to sign. Wallets connected through NEAR Connect take the transaction as is;
+// the local-node stand-in wallet takes a /sign link with an unsigned transaction, whose key and nonce it replaces.
 export async function walletLink({provider,walletUrl,signer,receiver,method,args,deposit=ONE_YOCTO,gas=GAS,callbackUrl}){
- if(!walletUrl)throw Error('No wallet is available for this network.');
+ const transaction={signerId:signer,receiverId:receiver,actions:[{type:'FunctionCall',params:{methodName:method,args,gas:String(gas),deposit:String(deposit)}}]};
+ if(!walletUrl)return {transaction,url:null};
  const block=await provider.viewBlock({finality:'final'});
  const tx=createTransaction(signer,KeyPair.fromRandom('ed25519').getPublicKey(),receiver,0n,[actions.functionCall(method,args,gas,BigInt(deposit))],baseDecode(block.header.hash));
- return `${walletUrl}/sign?${new URLSearchParams({transactions:Buffer.from(encodeTransaction(tx)).toString('base64'),callbackUrl})}`;
+ return {transaction,url:`${walletUrl}/sign?${new URLSearchParams({transactions:Buffer.from(encodeTransaction(tx)).toString('base64'),callbackUrl})}`};
 }
 // Checks on-chain that `signer` really sent this call and that it succeeded. A wallet callback alone proves nothing.
 export async function checkTx(provider,hash,{signer,receiver,methods,check=()=>true,network}){
@@ -71,7 +73,7 @@ export async function deployPlatform({rpcUrl,operator,factoryName='paygate',fact
  return {factory,vaultHash};
 }
 export function factoryClient({rpcUrl,network,factory,walletUrl}){
- const provider=providerFor(rpcUrl),wallet=walletUrl||NETWORKS[network]?.wallet;
+ const provider=providerFor(rpcUrl),wallet=walletUrl||null;
  return {
   provider,network,factory,walletUrl:wallet,
   config:()=>provider.callFunction({contractId:factory,method:'get_config',args:{},blockQuery:{finality:'optimistic'}}),
@@ -119,7 +121,7 @@ export function vaultClient(config){
  let queue=Promise.resolve();const serial=fn=>{const run=queue.then(fn);queue=run.catch(()=>{});return run};
  const view=(method,args={})=>provider.callFunction({contractId:vault,method,args,blockQuery:{finality:'optimistic'}});
  return {
-  network,vault,owner,agent,provider,walletUrl:config.walletUrl||net.wallet||null,
+  network,vault,owner,agent,provider,walletUrl:config.walletUrl||null,
   explorer:hash=>net.explorer&&hash?net.explorer+hash:null,
   async policy(){const p=await view('get_policy');return {...p,spendable:toNear(p.balance),spent:toNear(p.spent_in_window),limits:{auto:toNear(p.limits.auto_limit),max:toNear(p.limits.max_payment),daily:toNear(p.limits.daily_limit)}}},
   pending:()=>view('get_pending'),

@@ -21,7 +21,8 @@ if(factoryId&&!isAccountId(factoryId))fail('PAYGATE_FACTORY is not a valid accou
 // A local node has no wallet, so the server offers a stand-in wallet for its test accounts, and only there.
 if(env.PAYGATE_DEV_ACCOUNTS&&network!=='sandbox')fail('Remove PAYGATE_DEV_ACCOUNTS. Test accounts are only allowed on a local node.');
 const devAccounts=network==='sandbox'&&env.PAYGATE_DEV_ACCOUNTS?JSON.parse(env.PAYGATE_DEV_ACCOUNTS):null;
-const walletUrl=devAccounts?'/dev-wallet':NETWORKS[network]?.wallet;
+// On testnet and mainnet, customers connect their own wallet through NEAR Connect in the browser.
+const walletUrl=devAccounts?'/dev-wallet':null;
 const dir=env.DATA_DIR?pathToFileURL(env.DATA_DIR+'/'):new URL('./data/',import.meta.url);
 try{await mkdir(dir,{recursive:true,mode:0o700})}catch(e){fail(`Cannot create ${dir.pathname} (${e.code}). On Railway, attach a volume or set DATABASE_URL.`)}
 // Customer keys are sealed with PAYGATE_SECRET. A local run without one keeps a generated secret in the data folder.
@@ -104,11 +105,11 @@ async function act(c,account,req){
  }
  if(c.action==='owner'){
   need(v);const link=(method,args)=>v.ownerLink(method,args,callbackFor(req));
-  if(c.kind==='approve'||c.kind==='reject'){if(j?.status!=='Awaiting approval')throw Error('This job is not waiting for approval.');return {url:await link(c.kind+'_payment',{id:j.payment.paymentId})}}
-  if(c.kind==='freeze'){if(typeof c.frozen!=='boolean')throw Error('Invalid freeze state.');return {url:await link('set_frozen',{frozen:c.frozen})}}
-  if(c.kind==='payee'){if(!isAccountId(c.account))throw Error('Enter a valid NEAR account, such as name.near.');if(typeof c.allowed!=='boolean')throw Error('Invalid payee change.');return {url:await link('set_recipient',{recipient:c.account,allowed:c.allowed})}}
-  if(c.kind==='limits'){const l={auto_limit:amount(c.auto,'limits'),max_payment:amount(c.max,'limits'),daily_limit:amount(c.daily,'limits')};if(!(c.auto<=c.max&&c.max<=c.daily))throw Error('Limits must satisfy automatic ≤ maximum payment ≤ daily.');return {url:await link('set_limits',{limits:l})}}
-  if(c.kind==='withdraw')return {url:await link('withdraw',{amount:amount(c.amount,'an amount')})};
+  if(c.kind==='approve'||c.kind==='reject'){if(j?.status!=='Awaiting approval')throw Error('This job is not waiting for approval.');return link(c.kind+'_payment',{id:j.payment.paymentId})}
+  if(c.kind==='freeze'){if(typeof c.frozen!=='boolean')throw Error('Invalid freeze state.');return link('set_frozen',{frozen:c.frozen})}
+  if(c.kind==='payee'){if(!isAccountId(c.account))throw Error('Enter a valid NEAR account, such as name.near.');if(typeof c.allowed!=='boolean')throw Error('Invalid payee change.');return link('set_recipient',{recipient:c.account,allowed:c.allowed})}
+  if(c.kind==='limits'){const l={auto_limit:amount(c.auto,'limits'),max_payment:amount(c.max,'limits'),daily_limit:amount(c.daily,'limits')};if(!(c.auto<=c.max&&c.max<=c.daily))throw Error('Limits must satisfy automatic ≤ maximum payment ≤ daily.');return link('set_limits',{limits:l})}
+  if(c.kind==='withdraw')return link('withdraw',{amount:amount(c.amount,'an amount')});
   throw Error('Unknown owner action.');
  }
  if(c.action==='vault-create'){
@@ -125,7 +126,7 @@ async function act(c,account,req){
   const agentKey=KeyPair.fromRandom('ed25519'),publicKey=agentKey.getPublicKey().toString();
   // Earlier attempts are kept: a wallet may still sign an older link, and its agent key must not be lost.
   await setProfile(p=>({...p,pending:{name:c.name,publicKey,agentKey:box.seal(agentKey.toString()),createdAt:new Date().toISOString()},attempts:[{name:c.name,publicKey,agentKey:box.seal(agentKey.toString())},...(p.attempts||[])].slice(0,5)}));
-  return {url:await factory.createLink({owner:account,name:c.name,agentKey:publicKey,limits,payees,fund:c.fund,callbackUrl:callbackFor(req)})};
+  return factory.createLink({owner:account,name:c.name,agentKey:publicKey,limits,payees,fund:c.fund,callbackUrl:callbackFor(req)});
  }
  if(c.action==='vault-confirm'){
   if(v)throw Error('You already have a vault.');
@@ -172,17 +173,20 @@ async function devWallet(url,req,res){
  }
  return false;
 }
-const routes={'/':'index.html','/app.js':'app.js','/docs.js':'docs.js','/legal.js':'legal.js','/style.css':'style.css','/wallet-callback.html':'wallet-callback.html','/callback.js':'callback.js'},types={html:'text/html',js:'text/javascript',css:'text/css'};
+const routes={'/':'index.html','/app.js':'app.js','/docs.js':'docs.js','/legal.js':'legal.js','/vendor/near-connect.js':'vendor/near-connect.js','/style.css':'style.css','/wallet-callback.html':'wallet-callback.html','/callback.js':'callback.js'},types={html:'text/html',js:'text/javascript',css:'text/css'};
 http.createServer(async(req,res)=>{
 const json=(status,data,headers={})=>{res.writeHead(status,{'Content-Type':'application/json','Cache-Control':'no-store',...headers});res.end(JSON.stringify(data))};
-res.setHeader('X-Content-Type-Options','nosniff');res.setHeader('X-Frame-Options','DENY');res.setHeader('Referrer-Policy','no-referrer');res.setHeader('Content-Security-Policy',"default-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'");
+// Wallets connected through NEAR Connect run in sandboxed iframes that inherit this policy. Their inline code
+// carries the per-response nonce, and they may reach their own wallet services over https; nothing else runs.
+const nonce=randomBytes(16).toString('base64');
+res.setHeader('X-Content-Type-Options','nosniff');res.setHeader('X-Frame-Options','DENY');res.setHeader('Referrer-Policy','no-referrer');res.setHeader('Content-Security-Policy',`default-src 'self'; script-src 'self' 'nonce-${nonce}'; style-src 'self' 'unsafe-inline' https:; font-src 'self' https: data:; img-src 'self' data: https:; connect-src 'self' https: wss:; frame-src 'self' https:; worker-src 'self' blob:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`);
 if(hosted)res.setHeader('Strict-Transport-Security','max-age=31536000');
 if(req.url==='/healthz'&&req.method==='GET')return json(200,{ok:true});if(!hosts.includes(req.headers.host))return json(403,{error:'Invalid host.'});
 try{
 const url=new URL(req.url,origins[0]),path=url.pathname,ip=ipOf(req),body=async()=>{let raw='';for await(const chunk of req){raw+=chunk;if(Buffer.byteLength(raw)>16384)throw Error('Request too large.')}const c=JSON.parse(raw);if(!c||typeof c!=='object'||Array.isArray(c))throw Error();return c};
 if(path.startsWith('/dev-wallet/')&&req.method==='GET'){if(await devWallet(url,req,res))return;return json(404,{error:'Not found.'})}
 if(path.startsWith('/api/')&&req.method==='POST'&&(req.headers['x-paygate']!=='1'||(req.headers.origin&&!origins.includes(req.headers.origin))))return json(403,{error:'Request origin rejected.'});
-if(path==='/api/config'&&req.method==='GET')return json(200,{network,factory:factoryId||null,ready:Boolean(factoryId),walletUrl,explorer,minDeposit:0.4});
+if(path==='/api/config'&&req.method==='GET')return json(200,{network,factory:factoryId||null,ready:Boolean(factoryId),walletUrl,rpcUrl:NETWORKS[network]?.rpcUrl||null,explorer,minDeposit:0.4});
 if(path==='/api/session'&&req.method==='GET')return json(200,{account:await signedIn(req)});
 if(path==='/api/auth/challenge'&&req.method==='POST'){
  if(limited('challenge '+ip,30,6e5))return json(429,{error:'Too many sign-in attempts. Try again in a few minutes.'});
@@ -217,6 +221,6 @@ if(path.startsWith('/api/')){
  }
  return json(404,{error:'Not found.'});
 }
-if(req.method!=='GET')return json(405,{error:'Method not allowed.'});const name=routes[path]||(!path.includes('.')?'index.html':null);if(!name)return json(404,{error:'Not found.'});const data=await readFile(new URL(name,root));res.writeHead(200,{'Content-Type':types[name.split('.').pop()]+'; charset=utf-8','Cache-Control':'no-cache'});res.end(data);
+if(req.method!=='GET')return json(405,{error:'Method not allowed.'});const name=routes[path]||(!path.includes('.')?'index.html':null);if(!name)return json(404,{error:'Not found.'});let data=await readFile(new URL(name,root));if(name.endsWith('.html'))data=String(data).replaceAll('__CSP_NONCE__',nonce);res.writeHead(200,{'Content-Type':types[name.split('.').pop()]+'; charset=utf-8','Cache-Control':'no-cache'});res.end(data);
 }catch(e){return json(400,{error:reason(e)||'Unable to complete request.'})}
 }).on('error',e=>fail(e.code==='EADDRINUSE'?`Port ${port} is in use. Stop the other server or set PORT.`:e.message)).listen(port,env.HOST||(hosted?'0.0.0.0':'127.0.0.1'),()=>console.log(`PayGate → ${hosted?publicUrl:origins[0]} · ${network}${factoryId?' · factory '+factoryId:' · no factory'} · ${store.kind} storage`));

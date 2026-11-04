@@ -37,8 +37,10 @@ test('public pages load, other hosts are rejected, and account data needs a sess
  assert.equal((await post('/api/action',{action:'create'})).status,401);
  assert.deepEqual((await call('/api/session')).data,{account:null});
  assert.deepEqual((await call('/api/session',{headers:{Cookie:'paygate_session='+'a'.repeat(64)}})).data,{account:null});
- const config=(await call('/api/config')).data;assert.equal(config.network,'testnet');assert.equal(config.ready,false);assert.equal(config.walletUrl,'https://testnet.mynearwallet.com');
- const page=await call('/');assert.match(page.headers['strict-transport-security'],/max-age/);assert.match(page.headers['content-security-policy'],/frame-ancestors 'none'/);
+ const config=(await call('/api/config')).data;assert.equal(config.network,'testnet');assert.equal(config.ready,false);assert.equal(config.walletUrl,null);assert.equal(config.rpcUrl,'https://test.rpc.fastnear.com');
+ const page=await call('/'),again=await call('/');assert.match(page.headers['strict-transport-security'],/max-age/);assert.match(page.headers['content-security-policy'],/frame-ancestors 'none'/);
+ const nonce=/'nonce-([^']+)'/.exec(page.headers['content-security-policy'])[1];assert.ok(page.data.includes(`content="${nonce}"`),'the page carries its own nonce');assert.notEqual(nonce,/'nonce-([^']+)'/.exec(again.headers['content-security-policy'])[1],'each response gets a fresh nonce');
+ assert.equal((await call('/vendor/near-connect.js')).status,200);
 });
 test('mutations need the app header and an allowed origin',async()=>{
  assert.equal((await call('/api/auth/challenge',{method:'POST',body:{}})).status,403);

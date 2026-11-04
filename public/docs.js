@@ -47,12 +47,12 @@ npm run dev:chain</code></pre>
 <p>This runs the whole platform on a local NEAR node with two test customers and a built-in local wallet. <code>npm run demo:attack</code> plays an agent hijacked by a prompt injection: 12 attacks, all blocked.</p>`},
 {id:'approvals',title:'Wallet approvals',html:`
 <p class="eyebrow">Using PayGate</p><h1>Approving with your wallet</h1>
-<p class="lead">Your key never leaves your wallet. PayGate prepares each owner action, your wallet signs it in a pop-up, and PayGate checks the result on-chain.</p>
+<p class="lead">Your key never leaves your wallet. PayGate prepares each owner action, your connected wallet signs it, and PayGate checks the result on-chain.</p>
 <table><thead><tr><th>Action</th><th>Contract method</th></tr></thead><tbody>
 <tr><td>Approve a held payment</td><td><code>approve_payment</code></td></tr><tr><td>Reject a held payment</td><td><code>reject_payment</code></td></tr><tr><td>Freeze or unfreeze</td><td><code>set_frozen</code></td></tr><tr><td>Change limits</td><td><code>set_limits</code></td></tr><tr><td>Add or remove a payee</td><td><code>set_recipient</code></td></tr><tr><td>Withdraw to you</td><td><code>withdraw</code></td></tr>
 </tbody></table>
 <p>Each call attaches one yoctoNEAR. A function-call key cannot attach a deposit, so even a stolen agent key could not call these methods.</p>
-<h2>Pop-ups</h2><p>Allow pop-ups for PayGate. If your browser blocks them, PayGate asks you to allow them; nothing is signed until the wallet opens.</p>
+<h2>Wallets</h2><p>PayGate connects wallets through NEAR Connect: Meteor, HOT, Intear, Nightly, Ledger, OKX and others. Sign in with the account that owns your vault; if your wallet is connected as a different account, PayGate asks you to switch.</p>
 <h2>Another wallet or the CLI</h2><p>Sign the same call anywhere, then paste the transaction hash in the payment's review dialog. With NEAR CLI, approving payment 7 looks like this:</p>
 <pre><code>near contract call-function as-transaction acme.paygate.example.near approve_payment \\
   json-args '{"id":7}' prepaid-gas '60 Tgas' attached-deposit '1 yoctoNEAR' \\
@@ -125,7 +125,7 @@ railway up --service paygate</code></pre>
 <ul><li>Someone who takes over PayGate's server and its secret can use agent keys to spend up to each customer's automatic limit per payment and daily limit, only to that customer's payees. They cannot approve held payments, change rules or withdraw.</li><li>A hijacked agent can use its 50 daily requests or fill the queue of 20 held payments, which blocks payments until you reject them.</li><li>When the agent's 0.25 NEAR gas allowance runs out, it stops until a new agent is set.</li><li>The contracts have not had an independent audit. Start with small limits and a small balance.</li></ul>`},
 {id:'troubleshooting',title:'Troubleshooting',html:`
 <p class="eyebrow">Help</p><h1>Troubleshooting</h1>
-<h3>The wallet does not open</h3><p>Allow pop-ups for PayGate, then try again.</p>
+<h3>The wallet does not open</h3><p>Allow pop-ups for PayGate, or choose another wallet in the list.</p>
 <h3>"The vault name is taken"</h3><p>Vault names are shared by all customers. Choose another.</p>
 <h3>"does not exist on mainnet"</h3><p>A payee account must exist on the network before it can be paid. Check the spelling.</p>
 <h3>"Budget exceeds the vault balance not already committed"</h3><p>Open jobs reserve their budgets. Cancel jobs you no longer need, or send more NEAR to your vault.</p>

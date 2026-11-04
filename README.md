@@ -60,11 +60,11 @@ A worst-case attack demo hijacks the agent and uses its real key to try 12 ways 
 
 | Area | What customers get |
 | --- | --- |
-| **Wallet sign-in** | NEP-413 signed-message sign-in through MyNearWallet, verified against the account's full-access keys on-chain. Single-use nonces, bound to the site. |
+| **Wallet sign-in** | NEP-413 signed-message sign-in through NEAR Connect (Meteor, HOT, Intear, Nightly, Ledger, OKX and more), verified against the account's full-access keys on-chain. Single-use nonces, bound to the site. |
 | **One-click vault** | A keyless factory creates the customer's vault and restricted agent from one signed transaction, and refunds them if a step fails. Minimum deposit 0.4 NEAR. |
 | **Pinned code** | Every vault runs the same global contract, pinned by code hash, so nobody can upgrade customer vaults later. |
 | **On-chain rules** | Payee allowlist, automatic, per-payment and daily limits, one payment per job, held payments, freeze, and withdrawal that works while frozen. |
-| **Wallet approvals** | Approve, reject, freeze, change limits, add or remove payees, withdraw, each signed in a wallet pop-up and checked on-chain. Other wallets and NEAR CLI work by pasting the transaction hash. |
+| **Wallet approvals** | Approve, reject, freeze, change limits, add or remove payees, withdraw, each signed in the customer's connected wallet and checked on-chain. Other wallets and NEAR CLI work by pasting the transaction hash. |
 | **Jobs workflow** | Create, deliver, review, pay or hold, approve or reject, cancel. Budgets are checked against limits and against funds already committed. |
 | **Bring your own AI** | Customers add their own NEAR AI Cloud key, stored encrypted, to let the agent do the work. Chat id, request and response hashes and the response signature are kept with the receipt. |
 | **Dollar values** | A live NEAR Intents 1Click quote values each payment at review time. Quotes are dry, so no swap is made. |
@@ -100,7 +100,7 @@ A worst-case attack demo hijacks the agent and uses its real key to try 12 ways 
 
 ```mermaid
 flowchart LR
-  C([Customer]) -- signs in, approves --> W[MyNearWallet]
+  C([Customer]) -- signs in, approves --> W[Wallet via NEAR Connect]
   C -- browser --> S[PayGate server]
   W -- create_vault --> F[(Factory, no keys)]
   F -- creates --> V[(Customer vault, no keys)]
@@ -359,7 +359,7 @@ POST requests need the header `X-PayGate: 1`. Account endpoints need a session.
 | `npm run check:live` | Real 1Click quote and NEAR AI attestation | Internet |
 | `npm run check:deployed -- <url>` | Read-only check of a deployment | Chromium |
 
-`npm run test:chain` drives the real UI through the wallet pop-up and covers:
+`npm run test:chain` drives the real UI through a stand-in wallet on a local node and covers:
 
 - sign-in, and vault creation through the factory, confirming on-chain that the vault has no keys and the agent has one restricted key;
 - automatic and approved payments, rejections, freeze, limits, payees and withdrawal;
@@ -392,7 +392,7 @@ Dockerfile           Production image
 | `Set PAYGATE_SECRET` | Hosted servers need a secret of at least 32 characters. |
 | `Cannot open the database` | Check `DATABASE_URL`, or remove it to use files. |
 | `This PayGate server has no factory configured yet` | Run `platform:deploy` and set `PAYGATE_FACTORY`. |
-| The wallet does not open | Allow pop-ups for the site. |
+| The wallet does not open | Allow pop-ups for the site, or choose another wallet in the list. |
 | `The vault name … is taken` | Choose another name. |
 | `… does not exist on mainnet` | A payee must exist on the network. Check the spelling. |
 | `Budget exceeds the vault balance not already committed` | Cancel unneeded jobs or add NEAR to the vault. |
@@ -402,7 +402,7 @@ Dockerfile           Production image
 ## Limitations
 
 - Payments are in NEAR. The dollar value is an estimate at review time.
-- Wallet pop-ups use MyNearWallet. Other wallets work by pasting the transaction hash.
+- Wallets connect through NEAR Connect. Wallet code runs in sandboxed iframes and is loaded from the NEAR Connect wallet list. Owner actions can also be signed with NEAR CLI by pasting the transaction hash.
 - One vault per customer account.
 - The contracts have not been independently audited.
 

@@ -29,7 +29,7 @@ Requires Node.js 22.22.2 or later. Run `npm install`, then `npm run dev:chain`, 
 
 - **NEAR Intents.** Quotes are always `dry`, so 1Click returns no deposit address and no swap can happen. They price NEAR in USDC on NEAR.
 - **Attestation.** The check reads the TDX quote directly and confirms its format, nonce binding and gateway configuration measurement. It does not verify Intel's signature or replay the RTMR3 event log.
-- **Wallet pop-ups.** Wallet links use MyNearWallet's `/sign` and `/sign-message` pages in a pop-up, which report back with `postMessage` from the wallet's origin. A wallet that redirects instead lands on `/wallet-callback.html`, which passes the result to the opener on this origin only. Any other signer works by pasting a transaction hash.
+- **Wallets.** On testnet and mainnet, wallets connect through NEAR Connect (`public/vendor/near-connect.js`, bundled from `@hot-labs/near-connect` 0.12.0). Each wallet's code is fetched from the NEAR Connect wallet list and runs in a sandboxed iframe without same-origin access. The page's Content Security Policy allows inline code only with a per-response nonce, and allows wallets to reach their own services over https. Sign-in signs the NEP-413 message while connecting. Owner actions are sent to the wallet as transactions, and their hashes are checked on-chain. On a local node, a stand-in wallet signs through `/wallet-callback.html` instead.
 
 ## Rebuilding the contracts
 
