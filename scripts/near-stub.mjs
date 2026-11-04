@@ -14,7 +14,7 @@ export async function startStub(port=0){
   let raw='';for await(const chunk of req)raw+=chunk;
   const url=new URL(req.url,'http://stub'),send=(status,data)=>{res.writeHead(status,{'Content-Type':'application/json'});res.end(JSON.stringify(data))};
   if(url.pathname==='/quote'){const body=JSON.parse(raw);seen.quotes.push(body);return send(201,{quote:{amountInUsd:'3.83',amountOutFormatted:'3.80',minAmountOut:'3760000',timeEstimate:22},signature:'ed25519:stub',correlationId:'stub-quote',timestamp:'2026-11-01T00:00:00.000Z'})}
-  if(url.pathname==='/chat/completions'){if(req.headers.authorization!=='Bearer test-key')return send(401,{});seen.chats.push(JSON.parse(raw));return send(200,{id:'chatcmpl-stub',model:'stub/model',choices:[{message:{content:'Stub delivery written by the model <b>stub</b>.'}}]})}
+  if(url.pathname==='/chat/completions'){if(!String(req.headers.authorization).startsWith('Bearer test-key'))return send(401,{});seen.chats.push(JSON.parse(raw));return send(200,{id:'chatcmpl-stub',model:'stub/model',choices:[{message:{content:'Stub delivery written by the model <b>stub</b>.'}}]})}
   if(url.pathname==='/signature/chatcmpl-stub')return send(200,{text:'a:b',signature:'0xstub',signing_address:'ab'.repeat(32),signing_algo:'ed25519'});
   if(url.pathname==='/attestation/report')return send(200,report(url.searchParams.get('nonce')));
   send(404,{});

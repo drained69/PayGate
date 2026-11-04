@@ -1,17 +1,26 @@
 import {Sandbox,DEFAULT_ACCOUNT_ID,DEFAULT_PRIVATE_KEY} from 'near-sandbox';
 import {KeyPair,nearToYocto} from 'near-api-js';
-import {accountFor,provision} from '../chain.mjs';
+import {accountFor,provision,deployPlatform} from '../chain.mjs';
 // near-sdk 5.30 imports host functions added in nearcore 2.14, so the default 2.13 sandbox cannot run the contract.
 const VERSION='2.14.0';
 export const near=n=>String(nearToYocto(n));
 export const LIMITS={auto_limit:near('0.1'),max_payment:near('0.5'),daily_limit:near('1')};
-// A local node with a vault, a restricted agent and one allowlisted payee, for development and tests.
-export async function startLocalChain(){
- const sandbox=await Sandbox.start({version:VERSION});
- try{
-  const owner=accountFor(sandbox.rpcUrl,DEFAULT_ACCOUNT_ID,DEFAULT_PRIVATE_KEY),payee=`payee.${DEFAULT_ACCOUNT_ID}`;
-  await owner.createAccount({newAccountId:payee,publicKey:KeyPair.fromRandom('ed25519').getPublicKey(),nearToTransfer:nearToYocto('0.01')});
+async function withSandbox(fn){const sandbox=await Sandbox.start({version:VERSION});try{return await fn(sandbox,accountFor(sandbox.rpcUrl,DEFAULT_ACCOUNT_ID,DEFAULT_PRIVATE_KEY))}catch(e){await sandbox.tearDown();throw e}}
+const account=async(owner,id,amount)=>{const key=KeyPair.fromRandom('ed25519');await owner.createAccount({newAccountId:id,publicKey:key.getPublicKey(),nearToTransfer:nearToYocto(amount)});return key.toString()};
+// A local node with one vault created directly, for the attack demo.
+export function startLocalChain(){
+ return withSandbox(async(sandbox,owner)=>{
+  const payee=`payee.${DEFAULT_ACCOUNT_ID}`;await account(owner,payee,'0.01');
   const config=await provision({rpcUrl:sandbox.rpcUrl,owner,limits:LIMITS,payees:[payee],vaultNear:'5',agentNear:'1',allowanceNear:'0.5'});
   return {sandbox,owner,ownerKey:DEFAULT_PRIVATE_KEY,payee,config:{...config,network:'sandbox'}};
- }catch(e){await sandbox.tearDown();throw e}
+ });
+}
+// A local node with the PayGate platform deployed and two customers who can sign in through the local wallet.
+export function startPlatform(){
+ return withSandbox(async(sandbox,operator)=>{
+  const {factory}=await deployPlatform({rpcUrl:sandbox.rpcUrl,operator});
+  const customers={[`alice.${DEFAULT_ACCOUNT_ID}`]:await account(operator,`alice.${DEFAULT_ACCOUNT_ID}`,'20'),[`bob.${DEFAULT_ACCOUNT_ID}`]:await account(operator,`bob.${DEFAULT_ACCOUNT_ID}`,'20')};
+  const payee=`payee.${DEFAULT_ACCOUNT_ID}`;await account(operator,payee,'0.01');
+  return {sandbox,operator,factory,customers,payee,rpcUrl:sandbox.rpcUrl};
+ });
 }

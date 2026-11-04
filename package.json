@@ -13,7 +13,8 @@
     "demo:attack": "node scripts/attack-demo.mjs",
     "dev:chain": "node scripts/dev-chain.mjs",
     "test:chain": "node scripts/chain-check.mjs",
-    "vault:deploy": "node scripts/deploy-vault.mjs"
+    "platform:deploy": "node scripts/deploy-platform.mjs",
+    "test:postgres": "node scripts/postgres-check.mjs"
   },
   "engines": {
     "node": ">=22.22.2"
@@ -23,7 +24,8 @@
     "near-sandbox": "^0.3.4"
   },
   "dependencies": {
-    "near-api-js": "^7.4.0"
+    "near-api-js": "^7.4.0",
+    "pg": "^8.23.1"
   },
   "overrides": {
     "tar": "^7.5.21"

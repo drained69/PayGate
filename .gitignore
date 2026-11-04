@@ -4,3 +4,4 @@ node_modules/
 test-results/
 playwright-report/
 contract/target/
+contract/factory/target/

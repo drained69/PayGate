@@ -82,13 +82,16 @@ pub struct Vault {
 
 #[near]
 impl Vault {
-    /// Private, so nobody can front-run initialization between deploy and init.
+    /// Callable only by the vault itself or by the account that created it, such as
+    /// the PayGate factory, which initializes it in the same receipt that creates it.
     #[init]
-    #[private]
-    pub fn new(owner: AccountId, agent: AccountId, limits: Limits) -> Self {
+    pub fn new(owner: AccountId, agent: AccountId, limits: Limits, recipients: Option<Vec<AccountId>>) -> Self {
+        let caller = env::predecessor_account_id();
+        let me = env::current_account_id();
+        require!(caller == me || me.is_sub_account_of(&caller), "Only the vault or its creator can initialize it");
         require!(owner != agent, "Owner and agent must differ");
         assert_limits(&limits);
-        Self {
+        let mut vault = Self {
             owner,
             agent,
             limits,
@@ -100,7 +103,11 @@ impl Vault {
             recipients: IterableSet::new(b"r"),
             pending: IterableMap::new(b"p"),
             used_jobs: LookupSet::new(b"j"),
+        };
+        for recipient in recipients.unwrap_or_default() {
+            vault.recipients.insert(recipient);
         }
+        vault
     }
 
     #[payable]
@@ -314,6 +321,7 @@ mod tests {
             acct("owner.near"),
             acct("agent.near"),
             Limits { auto_limit: near(1), max_payment: near(5), daily_limit: near(8) },
+            None,
         );
         call("owner.near", 1);
         v.set_recipient(acct("worker.near"), true);
@@ -483,6 +491,41 @@ mod tests {
         v.set_limits(Limits { auto_limit: near(500), max_payment: near(500), daily_limit: near(500) });
         call("agent.near", 0);
         v.request_payment(acct("worker.near"), near(200), "a".into());
+    }
+
+    fn limits() -> Limits {
+        Limits { auto_limit: near(1), max_payment: near(5), daily_limit: near(8) }
+    }
+
+    #[test]
+    fn the_creating_account_can_initialize_with_payees() {
+        testing_env!(VMContextBuilder::new()
+            .current_account_id(acct("v1.factory.near"))
+            .predecessor_account_id(acct("factory.near"))
+            .build());
+        let v = Vault::new(acct("owner.near"), acct("v1-agent.factory.near"), limits(), Some(vec![acct("worker.near")]));
+        assert_eq!(v.get_recipients(), vec![acct("worker.near")]);
+        assert_eq!(v.get_policy().owner, acct("owner.near"));
+    }
+
+    #[test]
+    #[should_panic(expected = "Only the vault or its creator")]
+    fn strangers_cannot_initialize() {
+        testing_env!(VMContextBuilder::new()
+            .current_account_id(acct("v1.factory.near"))
+            .predecessor_account_id(acct("attacker.near"))
+            .build());
+        Vault::new(acct("attacker.near"), acct("agent.near"), limits(), None);
+    }
+
+    #[test]
+    #[should_panic(expected = "Only the vault or its creator")]
+    fn a_grandparent_cannot_initialize() {
+        testing_env!(VMContextBuilder::new()
+            .current_account_id(acct("v1.factory.near"))
+            .predecessor_account_id(acct("near"))
+            .build());
+        Vault::new(acct("owner.near"), acct("agent.near"), limits(), None);
     }
 
     #[test]

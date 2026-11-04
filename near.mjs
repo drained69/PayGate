@@ -3,9 +3,8 @@ const env=process.env,cloud=()=>env.NEAR_AI_URL||'https://cloud-api.near.ai/v1',
 const WNEAR='nep141:wrap.near',USDC_NEAR='nep141:17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad2011e36133a1';
 const sha=v=>createHash('sha256').update(v).digest('hex');
 async function request(url,options,ms,label){let r;try{r=await fetch(url,{...options,signal:AbortSignal.timeout(ms)})}catch{throw Error(label+' is unreachable.')}if(!r.ok)throw Error(`${label} returned ${r.status}.`);return r}
-export const hasInferenceKey=()=>Boolean(env.NEAR_AI_API_KEY);
-export const integrations=()=>[
- {name:'NEAR AI Cloud inference',state:hasInferenceKey()?'live':'off',detail:hasInferenceKey()?`Agents run on ${model()}`:'Set NEAR_AI_API_KEY so agents can do the work. Until then, record deliveries yourself.'},
+export const integrations=hasKey=>[
+ {name:'NEAR AI Cloud inference',state:hasKey?'live':'off',detail:hasKey?`Your agent runs on ${model()}`:'Add your NEAR AI API key in Settings so the agent can do the work. Until then, record deliveries yourself.'},
  {name:'NEAR AI Cloud attestation',state:'live',detail:'Public report, checked from the Evidence room'},
  {name:'NEAR Intents 1Click',state:'live',detail:'Live NEAR to USDC price for each payment. Quotes only, no swap is made.'}
 ];
@@ -35,9 +34,9 @@ export async function attestation(){
  const r=await request(url,{headers:{Accept:'application/json'}},60000,'NEAR AI Cloud');
  return {...checkReport(await r.json(),nonce),nonce,checkedAt:new Date().toISOString()};
 }
-// Runs a job on NEAR AI Cloud. Prompts and replies stay in the local workspace and are never logged.
-export async function deliver(job){
- const auth={Authorization:'Bearer '+env.NEAR_AI_API_KEY},body=JSON.stringify({model:model(),max_tokens:900,messages:[{role:'system',content:`You are an AI agent working for a company through PayGate. Complete the assignment in under 300 words. If it needs facts you do not have, say so instead of inventing them.`},{role:'user',content:`Assignment: ${job.title}\nBrief: ${job.brief}`}]});
+// Runs a job on NEAR AI Cloud with the customer's own key. Prompts and replies are stored in their workspace and never logged.
+export async function deliver(job,apiKey){
+ const auth={Authorization:'Bearer '+apiKey},body=JSON.stringify({model:model(),max_tokens:900,messages:[{role:'system',content:`You are an AI agent working for a company through PayGate. Complete the assignment in under 300 words. If it needs facts you do not have, say so instead of inventing them.`},{role:'user',content:`Assignment: ${job.title}\nBrief: ${job.brief}`}]});
  const r=await request(cloud()+'/chat/completions',{method:'POST',headers:{...auth,'Content-Type':'application/json','Accept-Encoding':'identity'},body},120000,'NEAR AI Cloud');
  const raw=await r.text(),reply=JSON.parse(raw),text=reply.choices?.[0]?.message?.content;
  if(!text)throw Error('NEAR AI Cloud returned no delivery.');
