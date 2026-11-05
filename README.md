@@ -332,7 +332,7 @@ Platform deployment only: `NEAR_OPERATOR_ACCOUNT`, `NEAR_OPERATOR_KEY`, `FACTORY
 - **Gas allowance.** Without a relayer, the agent's 0.25 NEAR allowance eventually runs out; the customer can name a new agent with `set_agent`. With a relayer, the relayer pays instead; someone with the server could spend the relayer's gas money, never customers' funds.
 - **No independent audit yet.**
 
-Full trust boundaries are in [REPRODUCIBILITY.md](REPRODUCIBILITY.md).
+Full trust boundaries are in [REPRODUCIBILITY.md](REPRODUCIBILITY.md). A design for taking agent keys off the server with a TEE-attested Shade Agent worker, not yet built, is in [docs/shade-agent-design.md](docs/shade-agent-design.md).
 
 ## Contract reference
 
