@@ -1,7 +1,8 @@
 //! PayGate factory. Creates a customer's spending vault and its restricted agent from one
 //! transaction the customer signs. The factory has no keys after setup and keeps no customer
 //! funds: each deposit goes to the new accounts, or back to the customer if a step fails.
-//! Vaults run the global contract pinned by code hash, so nobody can change their code later.
+//! The vault code is stored once, at setup, and each vault gets a copy of exactly that code.
+//! The factory has no keys and no method that changes the code, so nobody can change it later.
 use near_sdk::json_types::Base58CryptoHash;
 use near_sdk::serde_json::json;
 use near_sdk::{
@@ -13,8 +14,10 @@ use near_sdk::{
 pub const AGENT_FUND: NearToken = NearToken::from_millinear(300);
 /// Gas the agent key may spend before the owner has to issue a new one.
 pub const AGENT_ALLOWANCE: NearToken = NearToken::from_millinear(250);
-/// The vault needs a little for its own storage. Everything above it is spendable.
+/// The vault's state storage, on top of the storage for its code. Everything above it is spendable.
 pub const MIN_VAULT_FUND: NearToken = NearToken::from_millinear(100);
+/// Storage key of the vault code, kept outside the contract struct so ordinary calls do not load it.
+const CODE_KEY: &[u8] = b"code";
 const MAX_RECIPIENTS: usize = 20;
 const INIT_GAS: Gas = Gas::from_tgas(20);
 const CALLBACK_GAS: Gas = Gas::from_tgas(40);
@@ -55,10 +58,14 @@ pub struct Factory {
 
 #[near]
 impl Factory {
+    /// Stores the vault code. Its arguments are borsh: the raw code bytes.
     #[init]
     #[private]
-    pub fn new(vault_code: Base58CryptoHash) -> Self {
-        Self { vault_code: vault_code.into() }
+    pub fn new(#[serializer(borsh)] vault_code: Vec<u8>) -> Self {
+        require!(!vault_code.is_empty(), "Vault code is required");
+        let hash = env::sha256_array(&vault_code);
+        env::storage_write(CODE_KEY, &vault_code);
+        Self { vault_code: hash }
     }
 
     /// Creates `<name>.<factory>` owned by the caller and `<name>-agent.<factory>`, whose only
@@ -75,24 +82,28 @@ impl Factory {
     ) -> Promise {
         let owner = env::predecessor_account_id();
         let deposit = env::attached_deposit();
-        require!(
-            deposit >= MIN_VAULT_FUND.saturating_add(AGENT_FUND),
-            "Attach at least 0.4 NEAR: 0.3 for the agent and 0.1 for the vault"
-        );
+        let code = env::storage_read(CODE_KEY).unwrap_or_else(|| env::panic_str("Vault code missing"));
+        let vault_fund = vault_fund(code.len());
+        if deposit < vault_fund.saturating_add(AGENT_FUND) {
+            env::panic_str(&format!(
+                "Attach at least {} NEAR: 0.3 for the agent and the rest for the vault's code and storage",
+                vault_fund.saturating_add(AGENT_FUND).exact_amount_display()
+            ));
+        }
         require!(valid_name(&name), "Use 2 to 32 lowercase letters, digits or single dashes, not ending in -agent");
         require!(recipients.len() <= MAX_RECIPIENTS, "At most 20 payees at creation");
         let me = env::current_account_id();
         let vault: AccountId = format!("{name}.{me}").parse().unwrap_or_else(|_| env::panic_str("Invalid vault name"));
         let agent: AccountId = format!("{name}-agent.{me}").parse().unwrap_or_else(|_| env::panic_str("Invalid vault name"));
         let args = json!({ "owner": owner, "agent": agent, "limits": limits, "recipients": recipients, "token": token });
-        // Only the minimum travels with the creation. If it fails, that much is refunded to the factory
-        // in a later receipt, which the factory's buffer covers; the rest of the deposit never left.
+        // Only what the vault's storage needs travels with the creation. If it fails, that much is refunded
+        // to the factory in a later receipt, which the factory's buffer covers; the rest never left.
         Promise::new(vault.clone())
             .create_account()
-            .transfer(MIN_VAULT_FUND)
-            .use_global_contract(self.vault_code)
+            .transfer(vault_fund)
+            .deploy_contract(code)
             .function_call("new", args.to_string().into_bytes(), NearToken::from_yoctonear(0), INIT_GAS)
-            .then(Self::ext(me).with_static_gas(CALLBACK_GAS).on_vault(owner, vault, agent, agent_key, deposit))
+            .then(Self::ext(me).with_static_gas(CALLBACK_GAS).on_vault(owner, vault, agent, agent_key, deposit, vault_fund))
     }
 
     /// Once the vault exists, sends it the rest of the deposit and creates the agent. If the vault
@@ -105,12 +116,13 @@ impl Factory {
         agent: AccountId,
         agent_key: PublicKey,
         deposit: NearToken,
+        vault_fund: NearToken,
     ) -> Promise {
         if !succeeded() {
             Event::VaultFailed { owner: owner.clone(), vault }.emit();
             return Promise::new(owner).transfer(deposit);
         }
-        let rest = deposit.saturating_sub(AGENT_FUND).saturating_sub(MIN_VAULT_FUND);
+        let rest = deposit.saturating_sub(AGENT_FUND).saturating_sub(vault_fund);
         if !rest.is_zero() {
             Promise::new(vault.clone()).transfer(rest).detach();
         }
@@ -136,14 +148,20 @@ impl Factory {
     }
 
     pub fn get_config(&self) -> Config {
+        let code_len = env::storage_read(CODE_KEY).map_or(0, |c| c.len());
         Config {
             vault_code: self.vault_code.into(),
             agent_fund: AGENT_FUND,
-            min_deposit: MIN_VAULT_FUND.saturating_add(AGENT_FUND),
+            min_deposit: vault_fund(code_len).saturating_add(AGENT_FUND),
             tokens: true,
             external_payouts: true,
         }
     }
+}
+
+/// What a new vault needs: storage for its code, plus `MIN_VAULT_FUND` for its state.
+fn vault_fund(code_len: usize) -> NearToken {
+    env::storage_byte_cost().saturating_mul(code_len as u128).saturating_add(MIN_VAULT_FUND)
 }
 
 fn succeeded() -> bool {
@@ -170,7 +188,7 @@ mod tests {
             .current_account_id("factory.near".parse().unwrap())
             .predecessor_account_id("factory.near".parse().unwrap())
             .build());
-        let f = Factory::new(Base58CryptoHash::from([7u8; 32]));
+        let f = Factory::new(vec![0u8; 200_000]);
         testing_env!(VMContextBuilder::new()
             .current_account_id("factory.near".parse().unwrap())
             .predecessor_account_id("owner.near".parse().unwrap())
@@ -197,27 +215,29 @@ mod tests {
 
     #[test]
     fn creating_a_vault_returns_a_promise() {
-        let mut f = factory(NearToken::from_near(1));
+        let mut f = factory(NearToken::from_near(3));
         let _ = f.create_vault("acme".into(), key(), limits(), vec!["worker.near".parse().unwrap()], None);
-        assert_eq!(f.get_config().min_deposit, NearToken::from_millinear(400));
+        // 200 kB of code at 0.01 NEAR per kB, plus 0.1 for the vault's state and 0.3 for the agent.
+        assert_eq!(f.get_config().min_deposit, NearToken::from_millinear(2400));
+        assert_eq!(f.get_config().vault_code, Base58CryptoHash::from(env::sha256_array(&[0u8; 200_000])));
     }
 
     #[test]
-    #[should_panic(expected = "Attach at least 0.4 NEAR")]
+    #[should_panic(expected = "Attach at least 2.4 NEAR")]
     fn too_small_a_deposit_is_refused() {
-        let _ = factory(NearToken::from_millinear(399)).create_vault("acme".into(), key(), limits(), vec![], None);
+        let _ = factory(NearToken::from_millinear(2399)).create_vault("acme".into(), key(), limits(), vec![], None);
     }
 
     #[test]
     #[should_panic(expected = "lowercase letters")]
     fn agent_names_cannot_be_taken_as_vaults() {
-        let _ = factory(NearToken::from_near(1)).create_vault("acme-agent".into(), key(), limits(), vec![], None);
+        let _ = factory(NearToken::from_near(3)).create_vault("acme-agent".into(), key(), limits(), vec![], None);
     }
 
     #[test]
     #[should_panic(expected = "At most 20 payees")]
     fn payee_list_is_bounded() {
         let many = (0..21).map(|i| format!("p{i}.near").parse().unwrap()).collect();
-        let _ = factory(NearToken::from_near(1)).create_vault("acme".into(), key(), limits(), many, None);
+        let _ = factory(NearToken::from_near(3)).create_vault("acme".into(), key(), limits(), many, None);
     }
 }

@@ -64,8 +64,8 @@ A worst-case attack demo hijacks the agent and uses its real key to try 12 ways 
 | Area | What customers get |
 | --- | --- |
 | **Wallet sign-in** | NEP-413 signed-message sign-in through NEAR Connect (Meteor, HOT, Intear, Nightly, Ledger, OKX and more), verified against the account's full-access keys on-chain. Single-use nonces, bound to the site. |
-| **One-click vault** | A keyless factory creates the customer's vault and restricted agent from one signed transaction, and refunds them if a step fails. Minimum deposit 0.4 NEAR. |
-| **Pinned code** | Every vault runs the same global contract, pinned by code hash, so nobody can upgrade customer vaults later. |
+| **One-click vault** | A keyless factory creates the customer's vault and restricted agent from one signed transaction, and refunds them if a step fails. Minimum deposit about 2.34 NEAR, mostly storage for the vault's own copy of its code. |
+| **Fixed code** | The keyless factory stores the vault code once and copies exactly that code into each vault. Each vault's code hash matches the factory's `get_config().vault_code`, and nobody can upgrade customer vaults later. |
 | **On-chain rules** | Payee allowlist, automatic, per-payment and daily limits, one payment per job, held payments, freeze, and withdrawal that works while frozen. |
 | **Wallet approvals** | Approve, reject, freeze, change limits, add or remove payees, withdraw, each signed in the customer's connected wallet and checked on-chain. Other wallets and NEAR CLI work by pasting the transaction hash. |
 | **Jobs workflow** | Create, deliver, review, pay or hold, approve or reject, cancel. Budgets are checked against limits and against funds already committed. |
@@ -145,7 +145,7 @@ sequenceDiagram
   P->>W: unsigned create_vault(name, agent public key, …) with deposit
   C->>W: sign
   W->>F: create_vault
-  F->>F: create name.factory, use pinned vault code, init with owner = customer
+  F->>F: create name.factory, deploy the stored vault code, init with owner = customer
   F->>F: create name-agent.factory with one restricted key
   W-->>P: transaction hash
   P->>F: fetch transaction, check signer, key, events
@@ -155,7 +155,7 @@ sequenceDiagram
 ## Using PayGate
 
 1. **Sign in** with **Sign in with NEAR** and approve the message in your wallet.
-2. **Create your vault.** Choose a name, add payees, set limits and funding (at least 0.4 NEAR, of which 0.3 funds the agent account and its gas), then sign one transaction.
+2. **Create your vault.** Choose a name, add payees, set limits and funding (at least about 2.34 NEAR: 0.3 funds the agent account and its gas, and about 2 NEAR stays locked in your vault for its code and storage), then sign one transaction.
 3. **Optionally add your NEAR AI key** in **Settings** so the agent can do the work.
 4. **Create a job** with a brief, a payee and a budget in NEAR.
 5. **Deliver.** **Run agent**, or **Record delivery** to describe what the payee delivered.
@@ -234,10 +234,12 @@ Run once, from your own machine, with an operator account. The operator key is u
 
 | Cost | Amount |
 | --- | --- |
-| Publishing the vault code as a global contract (burned) | about 24 NEAR |
-| Storing the factory code (locked) | about 1.8 NEAR |
-| Buffer left in the factory for refunds | about 2.5 NEAR |
-| **Recommended `FACTORY_FUND`** | **28 NEAR** |
+| Storing the factory code (locked) | about 1.5 NEAR |
+| Storing the vault code in the factory (locked) | about 1.9 NEAR |
+| Buffer left in the factory for refunds | about 2.6 NEAR |
+| **Recommended `FACTORY_FUND`** | **6 NEAR** |
+
+Nothing is burned. Each customer's vault holds its own copy of the code, so each vault locks about 1.9 NEAR of the customer's deposit for storage. That is why the minimum deposit is about 2.34 NEAR.
 
 Without the confirmation flag, the script checks everything and prints a summary. It sends nothing.
 
@@ -248,9 +250,9 @@ NEAR_NETWORK=mainnet NEAR_OPERATOR_ACCOUNT=you.near NEAR_OPERATOR_KEY=ed25519:..
 Run the same command with ` -- --yes-mainnet` at the end to deploy. The script:
 
 1. creates `paygate.you.near` with a temporary key;
-2. publishes the vault code as a global contract pinned by its hash;
-3. deploys and initializes the factory with that hash;
-4. deletes the factory's key, so nobody can change it.
+2. deploys the factory and stores the vault code in it, in one transaction;
+3. checks on-chain that the factory has no keys and reports the expected vault code hash;
+4. deletes the factory's key first, so nobody can change it.
 
 The factory account name must be 25 characters or fewer. Set `FACTORY_NAME` for a shorter one.
 
@@ -305,7 +307,7 @@ The full launch steps and the pre-mainnet review are in [docs/MAINNET.md](docs/M
 | `DATA_DIR` | `./data` | Local data folder |
 | `PORT`, `HOST` | `3000`; `127.0.0.1` locally, `0.0.0.0` hosted | Listen address |
 
-Platform deployment only: `NEAR_OPERATOR_ACCOUNT`, `NEAR_OPERATOR_KEY`, `FACTORY_NAME` (default `paygate`), `FACTORY_FUND` (default `28`).
+Platform deployment only: `NEAR_OPERATOR_ACCOUNT`, `NEAR_OPERATOR_KEY`, `FACTORY_NAME` (default `paygate`), `FACTORY_FUND` (default `6`).
 
 ## Security model
 
@@ -320,7 +322,7 @@ Platform deployment only: `NEAR_OPERATOR_ACCOUNT`, `NEAR_OPERATOR_KEY`, `FACTORY
 | Freeze, including held payments; withdraw while frozen | Vault | Ongoing theft; stuck funds |
 | Owner methods require 1 yoctoNEAR | Vault | Calls from any function-call key |
 | Vault initialized only by itself or its creator | Vault | Someone else initializing a new vault |
-| Vault and factory have no keys; code pinned by hash | Deployment | Code swaps and upgrades |
+| Vault and factory have no keys; vault code fixed in the factory | Deployment | Code swaps and upgrades |
 | Factory refunds on failure | Factory | Lost deposits on taken names |
 | Sign-in checked against on-chain full-access keys, single-use nonce | Server | Signing in as someone else; replay |
 | Approvals and vault creation checked on-chain | Server | Forged wallet callbacks |
@@ -366,8 +368,8 @@ Source: [contract/factory/src/lib.rs](contract/factory/src/lib.rs). Built: `cont
 
 | Method | Caller | Description |
 | --- | --- | --- |
-| `new(vault_code)` | The factory itself, once | Pins the vault code hash |
-| `create_vault(name, agent_key, limits, recipients, token?)` | Anyone, at least 0.4 NEAR | Creates `name.factory` owned by the caller and `name-agent.factory` with one restricted key |
+| `new(vault_code)` | The factory itself, once | Stores the vault code (borsh bytes); `get_config().vault_code` is its SHA-256 |
+| `create_vault(name, agent_key, limits, recipients, token?)` | Anyone, at least `get_config().min_deposit` (about 2.34 NEAR) | Creates `name.factory` owned by the caller and `name-agent.factory` with one restricted key |
 | `get_config()` | View | Code hash, agent funding, minimum deposit, token support |
 
 Names are 2–32 lowercase letters, digits or single dashes and cannot end in `-agent`. Events (`paygate_factory`): `vault_created`, `vault_failed`, `agent_failed`.

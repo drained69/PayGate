@@ -40,10 +40,10 @@ The review covered the vault and factory contracts, the server (sign-in, session
 
 ## Launch checklist
 
-1. **Rehearse on testnet with the current contracts.** Fund `drained99.testnet` with 28 testnet NEAR, then run:
+1. **Rehearse on testnet with the current contracts.** Fund `drained99.testnet` with 7 testnet NEAR, then run:
 
    ```sh
-   NEAR_NETWORK=testnet NEAR_OPERATOR_ACCOUNT=drained99.testnet FACTORY_NAME=paygate2 FACTORY_FUND=28 npm run platform:deploy
+   NEAR_NETWORK=testnet NEAR_OPERATOR_ACCOUNT=drained99.testnet FACTORY_NAME=paygate2 FACTORY_FUND=6 npm run platform:deploy
    ```
 
    Set `PAYGATE_FACTORY=paygate2.drained99.testnet` on the testnet service. With your own wallet:
@@ -51,13 +51,13 @@ The review covered the vault and factory contracts, the server (sign-in, session
    - Pay automatically, approve, reject, freeze and withdraw.
    - Withdraw spare NEAR from the USDC vault.
 
-2. **Deploy the mainnet platform.** Use an operator account holding at least 30 NEAR. Run the command once without the flag to see the summary, then once with it:
+2. **Deploy the mainnet platform.** Use an operator account holding at least 7 NEAR. Run the command once without the flag to see the summary, then once with it:
 
    ```sh
-   NEAR_NETWORK=mainnet NEAR_OPERATOR_ACCOUNT=you.near FACTORY_FUND=28 npm run platform:deploy -- --yes-mainnet
+   NEAR_NETWORK=mainnet NEAR_OPERATOR_ACCOUNT=you.near FACTORY_FUND=6 npm run platform:deploy -- --yes-mainnet
    ```
 
-   Publishing the vault code burns about 24 NEAR. The script deletes the factory's key at the end, so check the printed vault hash against `sha256` of `contract/res/paygate_vault.wasm`.
+   About 3.4 NEAR stays locked for storage and about 2.6 NEAR stays as a refund buffer. Nothing is burned. The script deletes the factory's key, so check the printed vault hash against the SHA-256 of `contract/res/paygate_vault.wasm`. Each customer's vault locks about 1.9 NEAR of their deposit for its own copy of the code, so the minimum deposit is about 2.34 NEAR.
 
 3. **Create a separate mainnet service.** Keep testnet running for rehearsals. The mainnet service needs its own Postgres and its own `PAYGATE_SECRET`, stored in a password manager.
 

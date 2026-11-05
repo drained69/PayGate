@@ -12,7 +12,7 @@ Requires Node.js 22.22.2 or later. Run `npm install`, then `npm run dev:chain`, 
   - the receiver is the factory;
   - the name and agent public key are the ones it issued;
   - the factory emitted `vault_created` for this owner, vault and agent.
-- **Factory.** The factory has no keys. It creates each vault with the global contract pinned by hash and initializes it in the same receipt, so nobody can front-run or change it. If vault creation fails, it refunds the whole deposit; if only the agent fails, it refunds the agent funding. It keeps a small buffer for refunds and holds no customer funds otherwise.
+- **Factory.** The factory has no keys. It creates each vault with a copy of the vault code it stored at setup, and initializes it in the same receipt, so nobody can front-run or change it. If vault creation fails, it refunds the whole deposit; if only the agent fails, it refunds the agent funding. It keeps a small buffer for refunds and holds no customer funds otherwise.
 - **Approvals.** A wallet callback is never trusted on its own. The server fetches the transaction from NEAR and requires all of the following:
   - the owner signed it;
   - it was sent to that customer's vault;
@@ -34,7 +34,7 @@ Requires Node.js 22.22.2 or later. Run `npm install`, then `npm run dev:chain`, 
 
 ## Rebuilding the contracts
 
-`contract/res/paygate_vault.wasm` and `contract/res/paygate_factory.wasm` are committed, so no Rust toolchain is needed. To rebuild them, run `cargo build --release --target wasm32-unknown-unknown` in `contract/` and in `contract/factory/`, and copy each output to `contract/res/`. The build needs the `--cfg near` flag in `contract/.cargo/config.toml`, because `near-sdk` otherwise drops every contract panic message. The contracts need nearcore 2.14 or later, so the sandbox is pinned to 2.14.0. Publishing the vault code as a global contract burns ten times the normal storage cost, about 24 NEAR. `scripts/fixtures/test-usdc.wasm` is a test-only USDC built from `contract/test-token` for local nodes.
+`contract/res/paygate_vault.wasm` and `contract/res/paygate_factory.wasm` are committed, so no Rust toolchain is needed. To rebuild them, run `contract/build.sh`. It builds both crates and shrinks them with `wasm-opt -Oz` from binaryen 133 (`brew install binaryen`). The build needs the `--cfg near` flag in `contract/.cargo/config.toml`, because `near-sdk` otherwise drops every contract panic message. The contracts need nearcore 2.14 or later, so the sandbox is pinned to 2.14.0. The factory stores the vault code once (about 1.9 NEAR of storage) and copies it into each vault, whose owner's deposit pays about 1.9 NEAR for that copy. Nothing is burned. `scripts/fixtures/test-usdc.wasm` is a test-only USDC built from `contract/test-token` for local nodes.
 
 ## Verification
 

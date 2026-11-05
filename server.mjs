@@ -50,10 +50,11 @@ const relayer=env.PAYGATE_RELAYER_ACCOUNT?{accountId:env.PAYGATE_RELAYER_ACCOUNT
 const usdc=env.PAYGATE_USDC||USDC[network]||null;
 if(usdc&&!isAccountId(usdc))fail('PAYGATE_USDC is not a valid account.');
 // Only factories built with token support can create USDC vaults; older ones would silently create NEAR vaults.
-let factoryTokens=false,factoryExternal=false;
+// The minimum deposit comes from the factory: storage for the vault's code and state, plus the agent's funding.
+let factoryTokens=false,factoryExternal=false,minDeposit=0.4;
 const provider=(factory||factoryClient({rpcUrl,network,factory:'none',walletUrl})).provider;
 // Read at start and every few minutes, so a slow or failed first read never leaves features off until a restart.
-const readFactory=()=>factory?.config().then(c=>{factoryTokens=c?.tokens===true;factoryExternal=c?.external_payouts===true}).catch(()=>{});
+const readFactory=()=>factory?.config().then(c=>{factoryTokens=c?.tokens===true;factoryExternal=c?.external_payouts===true;if(c?.min_deposit)minDeposit=Math.ceil(Number(toNear(c.min_deposit))*100)/100}).catch(()=>{});
 readFactory();if(factory)setInterval(readFactory,3e5).unref();
 // Cross-chain payouts go through NEAR Intents 1Click, which works on mainnet only. PAYGATE_CROSSCHAIN=on or off overrides that.
 if(env.PAYGATE_CROSSCHAIN&&!['on','off'].includes(env.PAYGATE_CROSSCHAIN))fail('PAYGATE_CROSSCHAIN must be on or off.');
@@ -205,7 +206,7 @@ async function act(c,account,req){
   const token=c.currency==='USDC'?usdc:null;if(c.currency==='USDC'&&!(usdc&&factoryTokens))throw Error('USDC vaults are not available on this PayGate yet.');
   const dec=token?6:24,limits={auto_limit:amount(c.auto,'limits',dec),max_payment:amount(c.max,'limits',dec),daily_limit:amount(c.daily,'limits',dec)};
   if(!(c.auto<=c.max&&c.max<=c.daily))throw Error('Limits must satisfy automatic ≤ maximum payment ≤ daily.');
-  if(typeof c.fund!=='number'||!(c.fund>=0.4)||c.fund>1e6)throw Error('Fund the vault with at least 0.4 NEAR: 0.3 pays for the agent account and its gas.');
+  if(typeof c.fund!=='number'||!(c.fund>=minDeposit)||c.fund>1e6)throw Error(`Fund the vault with at least ${minDeposit} NEAR: 0.3 pays for the agent account and its gas, the rest for the vault's code and storage.`);
   const payees=[...new Set((Array.isArray(c.payees)?c.payees:[]).map(p=>String(p).trim().toLowerCase()).filter(Boolean))];
   if(payees.length>20)throw Error('Add at most 20 payees now. You can add more later.');
   for(const p of payees){if(!isAccountId(p))throw Error(`${p} is not a valid NEAR account.`);if(!await factory.exists(p))throw Error(`${p} does not exist on ${network}. A payment to it would fail.`)}
@@ -370,7 +371,7 @@ if(tg&&path===tgPath&&req.method==='POST'){if(req.headers['x-telegram-bot-api-se
 if(path.startsWith('/dev-wallet/')&&req.method==='GET'){if(await devWallet(url,req,res))return;return json(404,{error:'Not found.'})}
 if(path.startsWith('/api/v1/')||path==='/mcp')return agentApi(url,req,res,json,body,ip);
 if(path.startsWith('/api/')&&req.method==='POST'&&(req.headers['x-paygate']!=='1'||(req.headers.origin&&!origins.includes(req.headers.origin))))return json(403,{error:'Request origin rejected.'});
-if(path==='/api/config'&&req.method==='GET')return json(200,{network,factory:factoryId||null,ready:Boolean(factoryId),walletUrl,rpcUrl:NETWORKS[network]?.rpcUrl||null,explorer,minDeposit:0.4,telegram:Boolean(tgBot),usdc:Boolean(usdc&&factoryTokens),crossChain:Boolean(crossChainWanted&&factoryExternal&&usdc),chains:crossChainWanted&&factoryExternal&&usdc?await crossChainAssets().then(a=>a.map(({chain,name})=>({chain,name}))).catch(()=>[]):[]});
+if(path==='/api/config'&&req.method==='GET')return json(200,{network,factory:factoryId||null,ready:Boolean(factoryId),walletUrl,rpcUrl:NETWORKS[network]?.rpcUrl||null,explorer,minDeposit,telegram:Boolean(tgBot),usdc:Boolean(usdc&&factoryTokens),crossChain:Boolean(crossChainWanted&&factoryExternal&&usdc),chains:crossChainWanted&&factoryExternal&&usdc?await crossChainAssets().then(a=>a.map(({chain,name})=>({chain,name}))).catch(()=>[]):[]});
 if(path==='/api/session'&&req.method==='GET')return json(200,{account:await signedIn(req)});
 if(path==='/api/auth/challenge'&&req.method==='POST'){
  if(limited('challenge '+ip,30,6e5))return json(429,{error:'Too many sign-in attempts. Try again in a few minutes.'});

@@ -69,14 +69,15 @@ export async function verifySignIn(provider,{accountId,publicKey,signature,messa
  if(access.permission!=='FullAccess')throw Error('Sign in with a full-access key of your account.');
  return accountId;
 }
-// Publishes the vault code once as a global contract pinned by hash, then deploys the factory, which ends with no keys.
-export async function deployPlatform({rpcUrl,operator,factoryName='paygate',factoryNear='28'}){
+// Deploys the factory with the vault code stored in it, then deletes the factory's key. Each vault gets a copy of that code.
+export async function deployPlatform({rpcUrl,operator,factoryName='paygate',factoryNear='6'}){
  const factory=`${factoryName}.${operator.accountId}`,key=KeyPair.fromRandom('ed25519');
  const vaultCode=new Uint8Array(await readFile(CODE)),factoryCode=new Uint8Array(await readFile(FACTORY_CODE)),vaultHash=baseEncode(createHash('sha256').update(vaultCode).digest());
  await operator.createAccount({newAccountId:factory,publicKey:key.getPublicKey(),nearToTransfer:nearToYocto(factoryNear)});
  const admin=accountFor(rpcUrl,factory,key.toString());
- await admin.signAndSendTransaction({receiverId:factory,actions:[actions.deployGlobalContract(vaultCode,'codeHash')]});
- await admin.signAndSendTransaction({receiverId:factory,actions:[actions.deployContract(factoryCode),actions.functionCall('new',{vault_code:vaultHash},30n*TGAS,0n)]});
+ // `new` takes borsh arguments: the code's length as a little-endian u32, then the code.
+ const args=new Uint8Array(4+vaultCode.length);new DataView(args.buffer).setUint32(0,vaultCode.length,true);args.set(vaultCode,4);
+ await admin.signAndSendTransaction({receiverId:factory,actions:[actions.deployContract(factoryCode),actions.functionCall('new',args,150n*TGAS,0n)]});
  await admin.deleteKey(key.getPublicKey());
  return {factory,vaultHash};
 }

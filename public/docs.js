@@ -18,7 +18,7 @@ export const sections=[
 <p class="eyebrow">Concepts</p><h1>How it works</h1>
 <p class="lead">Sign in, create a vault, then pay through it. Each step is checked by something the agent does not control.</p>
 <h2>Sign in</h2><p>Select <b>Sign in with NEAR</b>. Your wallet signs a one-time message (NEP-413). PayGate checks the signature and that the key belongs to your account on-chain. There is no password.</p>
-<h2>Create your vault</h2><p>Choose a name, your first payees, limits and initial funding (at least 0.4 NEAR). Your wallet signs one call to the PayGate factory, which creates <code>name.factory</code> owned by you and <code>name-agent.factory</code> with a single restricted key. PayGate checks the result on-chain before showing your dashboard.</p>
+<h2>Create your vault</h2><p>Choose a name, your first payees, limits and initial funding (at least about 2.34 NEAR: 0.3 funds the agent and about 2 NEAR stays locked in your vault for its own copy of the code and its storage). Your wallet signs one call to the PayGate factory, which creates <code>name.factory</code> owned by you and <code>name-agent.factory</code> with a single restricted key. PayGate checks the result on-chain before showing your dashboard.</p>
 <h2>A payment</h2>
 <ol>
 <li><b>Create a job</b> with a brief, an allowlisted payee and a budget. PayGate checks the budget against your per-payment limit and against funds not already committed to other open jobs.</li>
@@ -60,7 +60,7 @@ npm run dev:chain</code></pre>
 {id:'usdc',title:'USDC budgets',html:`
 <p class="eyebrow">Using PayGate</p><h1>USDC budgets</h1>
 <p class="lead">Budget in dollars: a vault can hold and pay in USDC instead of NEAR.</p>
-<ol><li>When you create your vault, choose <b>USDC</b> as the currency. Limits are then in USDC, for example 10 automatic, 50 per payment and 100 per day. The 0.4 NEAR you send still funds the agent and the vault's storage.</li>
+<ol><li>When you create your vault, choose <b>USDC</b> as the currency. Limits are then in USDC, for example 10 automatic, 50 per payment and 100 per day. The NEAR you send still funds the agent and the vault's code and storage; anything above that pays for USDC registrations and can be withdrawn later.</li>
 <li>In <b>Controls</b>, register each payee with USDC (<b>Register in wallet</b>, 0.00125 NEAR once per payee). A token contract only pays registered accounts; a payment to an unregistered one is refunded to your vault.</li>
 <li>In <b>Treasury</b>, <b>Deposit USDC</b>. Your wallet sends USDC to the vault with <code>ft_transfer_call</code>, and registers the vault with USDC if needed.</li>
 <li>Pay jobs as usual. Receipts and alerts show USDC, and withdrawals return USDC to you.</li></ol>
@@ -150,7 +150,7 @@ curl -X POST $BASE/jobs/PG-1a2b3c4d/pay -H "Authorization: Bearer $KEY"</code></
 <p class="eyebrow">Operate</p><h1>Run your own PayGate</h1>
 <p class="lead">For operators. Customers do not need any of this: they sign in and create a vault.</p>
 <h2>1. Deploy the platform</h2>
-<p>Run once from your own machine with an operator account. It publishes the vault code as a global contract pinned by hash, so every customer vault runs exactly that code, and deploys the factory, which ends with no keys. Publishing burns about 24 NEAR and the factory code locks about 1.8 NEAR, so fund it with 28 NEAR. Without the confirmation flag it only prints a summary.</p>
+<p>Run once from your own machine with an operator account. It deploys the factory with the vault code stored in it, so every customer vault gets exactly that code, and the factory ends with no keys. Storage locks about 3.4 NEAR and about 2.6 NEAR stays as a refund buffer, so fund it with 6 NEAR. Nothing is burned. Without the confirmation flag it only prints a summary.</p>
 <pre><code>NEAR_NETWORK=mainnet NEAR_OPERATOR_ACCOUNT=you.near NEAR_OPERATOR_KEY=ed25519:... \\
 npm run platform:deploy</code></pre>
 <p>Run it again with <code>-- --yes-mainnet</code> to deploy. It prints the <code>PAYGATE_FACTORY</code> value for your server.</p>
@@ -185,7 +185,7 @@ railway up --service paygate</code></pre>
 <tr><td>Approval above the automatic limit</td><td>Your vault and wallet</td><td>Large payments nobody reviewed</td></tr>
 <tr><td>Each job paid once</td><td>Your vault</td><td>Replayed payments</td></tr>
 <tr><td>Vault and factory have no keys</td><td>Deployment</td><td>Anyone changing the code or taking funds</td></tr>
-<tr><td>Vault code pinned by hash</td><td>NEAR global contracts</td><td>A silent upgrade of every vault</td></tr>
+<tr><td>Vault code fixed by the keyless factory</td><td>Factory contract</td><td>A silent upgrade of every vault</td></tr>
 <tr><td>Wallet sign-in checked on-chain</td><td>PayGate</td><td>Signing in as someone else</td></tr>
 <tr><td>Approvals checked on-chain</td><td>PayGate</td><td>Forged callbacks recording payments that never happened</td></tr>
 <tr><td>Agent and AI keys encrypted (AES-256-GCM)</td><td>PayGate</td><td>A database leak exposing usable keys</td></tr>

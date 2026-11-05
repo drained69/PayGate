@@ -36,7 +36,7 @@ try{
  await viaWallet(page,()=>page.locator('#signin').click(),alice);
  await page.getByRole('heading',{name:'Create your vault.'}).waitFor();await toast('Signed in as '+alice);
  // Vault creation: a payee that does not exist is caught before the wallet signs anything.
- const form=page.locator('#vault-form');await form.getByLabel('Vault name').fill('acme');await form.getByLabel('Initial funding (NEAR)').fill('3');await form.getByLabel('Payees').fill('ghost.sandbox');
+ const form=page.locator('#vault-form');await form.getByLabel('Vault name').fill('acme');await form.getByLabel('Initial funding (NEAR)').fill('5');await form.getByLabel('Payees').fill('ghost.sandbox');
  const [blocked]=await Promise.all([page.waitForEvent('popup'),form.getByRole('button',{name:'Create vault in wallet'}).click()]);if(!blocked.isClosed())await blocked.waitForEvent('close');
  await page.locator('#vault-error').getByText('does not exist').waitFor();
  await form.getByLabel('Payees').fill(payee);
@@ -131,10 +131,13 @@ try{
  const other=await open();await other.goto(url);await viaWallet(other,()=>other.locator('#signin').click(),bob);await other.getByRole('heading',{name:'Create your vault.'}).waitFor();
  const theirs=await (await other.request.get(url+'/api/state')).json();assert.equal(theirs.account,bob);assert.equal(theirs.vault,null);assert.equal(theirs.workspace.jobs.length,0);
  assert.match((await post(other,{action:'pay',id:rejected})).error,/Create your vault first/);
- assert.match((await post(other,{action:'vault-create',name:'acme',fund:1,auto:0.1,max:0.5,daily:1,payees:[]})).error,/taken/);
+ assert.match((await post(other,{action:'vault-create',name:'cheap',fund:2,auto:0.1,max:0.5,daily:1,payees:[]})).error,/at least 2\.34 NEAR/,'the minimum comes from the factory');
+ assert.equal((await (await other.request.get(url+'/api/config')).json()).minDeposit,2.34);
+ assert.equal((await provider.viewAccount({accountId:vault,blockQuery:{finality:'optimistic'}})).code_hash,(await provider.callFunction({contractId:factory,method:'get_config',args:{},blockQuery:{finality:'optimistic'}})).vault_code,'each vault runs exactly the code the factory holds');
+ assert.match((await post(other,{action:'vault-create',name:'acme',fund:3,auto:0.1,max:0.5,daily:1,payees:[]})).error,/taken/);
  assert.match((await post(other,{action:'vault-confirm',txHash:s.workspace.receipts[0].settlement.txHash})).error,/Start creating a vault first/);
  // A wallet that signs but never reports back: PayGate finds the new vault on-chain without a hash.
- const link=(await post(other,{action:'vault-create',name:'bobco',fund:1,auto:0.1,max:0.5,daily:1,payees:[payee]})).url,tx=decodeTransaction(Buffer.from(new URL(link,url).searchParams.get('transactions'),'base64'));
+ const link=(await post(other,{action:'vault-create',name:'bobco',fund:3,auto:0.1,max:0.5,daily:1,payees:[payee]})).url,tx=decodeTransaction(Buffer.from(new URL(link,url).searchParams.get('transactions'),'base64'));
  await accountFor(app.rpcUrl,bob,customers[bob]).signAndSendTransaction({receiverId:tx.receiverId,actions:tx.actions});
  assert.equal((await post(other,{action:'vault-confirm'})).vault.vault,`bobco.${factory}`);
  assert.ok(Number(await provider.callFunction({contractId:`bobco.${factory}`,method:'get_policy',args:{},blockQuery:{finality:'optimistic'}}).then(p=>BigInt(p.balance)))>0.69e24,'the rest of the deposit reaches the vault');
@@ -145,7 +148,7 @@ try{
  const usdcBal=async id=>BigInt(await provider.callFunction({contractId:usdc,method:'ft_balance_of',args:{account_id:id},blockQuery:{finality:'optimistic'}}));
  const cp=await open(),ctoast=t=>cp.locator('#toast').getByText(t,{exact:false}).waitFor();await cp.goto(url);await viaWallet(cp,()=>cp.locator('#signin').click(),carol);
  const cf=cp.locator('#vault-form');await cf.getByLabel('Vault name').fill('carolco');await cf.getByLabel('Currency').selectOption('USDC');
- assert.equal(await cf.locator('input[name=auto]').inputValue(),'10','USDC limits are suggested in USDC');await cf.getByLabel('Initial funding (NEAR)').fill('0.5');await cf.locator('textarea[name=payees]').fill(payee);
+ assert.equal(await cf.locator('input[name=auto]').inputValue(),'10','USDC limits are suggested in USDC');await cf.getByLabel('Initial funding (NEAR)').fill('2.6');await cf.locator('textarea[name=payees]').fill(payee);
  await viaWallet(cp,()=>cf.getByRole('button',{name:'Create vault in wallet'}).click());await ctoast('Your vault is live.');
  const cvault=`carolco.${factory}`;assert.equal((await provider.callFunction({contractId:cvault,method:'get_policy',args:{},blockQuery:{finality:'optimistic'}})).token,usdc);
  await cp.locator('nav [data-page="Controls"]').click();await viaWallet(cp,()=>cp.getByRole('button',{name:'Register in wallet'}).click());await cp.getByText('Registered').waitFor();
