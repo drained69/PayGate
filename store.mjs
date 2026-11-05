@@ -10,7 +10,8 @@ async function postgres(url){
  await pool.query(`CREATE TABLE IF NOT EXISTS accounts(account_id text PRIMARY KEY,profile jsonb NOT NULL,workspace jsonb NOT NULL,created_at timestamptz NOT NULL DEFAULT now(),updated_at timestamptz NOT NULL DEFAULT now());
  CREATE TABLE IF NOT EXISTS sessions(token_hash text PRIMARY KEY,account_id text NOT NULL REFERENCES accounts ON DELETE CASCADE,expires_at timestamptz NOT NULL);
  CREATE TABLE IF NOT EXISTS nonces(nonce text PRIMARY KEY,expires_at timestamptz NOT NULL);
- CREATE INDEX IF NOT EXISTS sessions_account ON sessions(account_id);`);
+ CREATE INDEX IF NOT EXISTS sessions_account ON sessions(account_id);
+ CREATE TABLE IF NOT EXISTS api_keys(key_hash text PRIMARY KEY,account_id text NOT NULL REFERENCES accounts ON DELETE CASCADE,created_at timestamptz NOT NULL DEFAULT now());`);
  const row=r=>r&&{account:r.account_id,profile:r.profile,workspace:r.workspace};
  return {
   kind:'postgres',
@@ -33,6 +34,10 @@ async function postgres(url){
   async dropSession(hash){await pool.query('DELETE FROM sessions WHERE token_hash=$1',[hash])},
   async addNonce(nonce,expires){await pool.query('INSERT INTO nonces VALUES($1,$2)',[nonce,new Date(expires)])},
   async useNonce(nonce){return (await pool.query('DELETE FROM nonces WHERE nonce=$1 AND expires_at>now() RETURNING nonce',[nonce])).rowCount===1},
+  // Agent API keys are looked up by hash only; the key itself is never stored.
+  async addApiKey(hash,account){await pool.query('INSERT INTO api_keys(key_hash,account_id) VALUES($1,$2)',[hash,account])},
+  async apiKey(hash){return (await pool.query('SELECT account_id FROM api_keys WHERE key_hash=$1',[hash])).rows[0]?.account_id||null},
+  async dropApiKey(hash){await pool.query('DELETE FROM api_keys WHERE key_hash=$1',[hash])},
   async purge(){await pool.query('DELETE FROM sessions WHERE expires_at<now()');await pool.query('DELETE FROM nonces WHERE expires_at<now()')},
   async stats(){return {accounts:Number((await pool.query('SELECT count(*) FROM accounts')).rows[0].count)}},
   close:()=>pool.end()
@@ -42,6 +47,8 @@ async function files(dir){
  const base=new URL('accounts/',dir);await mkdir(base,{recursive:true,mode:0o700});
  // NEAR account names never contain '~', so it stands in for the '/' of network-scoped keys in file names.
  const file=a=>encodeURIComponent(a.replaceAll('/','~')),path=a=>new URL(file(a)+'.json',base),queues=new Map(),sessions=new Map(),nonces=new Map();
+ const keysFile=new URL('api-keys.json',dir),keys=new Map(Object.entries(JSON.parse(await readFile(keysFile,'utf8').catch(()=>'{}'))));
+ const saveKeys=async()=>{const tmp=new URL('api-keys.tmp',dir);await writeFile(tmp,JSON.stringify(Object.fromEntries(keys)),{mode:0o600});await rename(tmp,keysFile)};
  const get=async a=>{try{return JSON.parse(await readFile(path(a),'utf8'))}catch(e){if(e.code==='ENOENT')return null;throw e}};
  return {
   kind:'files',get,
@@ -49,7 +56,10 @@ async function files(dir){
    const run=(queues.get(account)||Promise.resolve()).then(async()=>{const next=await fn((await get(account))||fresh(account)),tmp=new URL(file(account)+'.tmp',base);await writeFile(tmp,JSON.stringify(next,null,2),{mode:0o600});await rename(tmp,path(account));return next});
    queues.set(account,run.catch(()=>{}));return run;
   },
-  async remove(account){await rm(path(account),{force:true});for(const [h,s] of sessions)if(s.account===account)sessions.delete(h)},
+  async remove(account){await rm(path(account),{force:true});for(const [h,s] of sessions)if(s.account===account)sessions.delete(h);let changed=false;for(const [h,a] of keys)if(a===account){keys.delete(h);changed=true}if(changed)await saveKeys()},
+  async addApiKey(hash,account){keys.set(hash,account);await saveKeys()},
+  async apiKey(hash){return keys.get(hash)||null},
+  async dropApiKey(hash){keys.delete(hash);await saveKeys()},
   async addSession(hash,account,expires){sessions.set(hash,{account,expires})},
   async session(hash){const s=sessions.get(hash);return s&&s.expires>Date.now()?s.account:null},
   async dropSession(hash){sessions.delete(hash)},

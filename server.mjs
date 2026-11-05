@@ -35,7 +35,9 @@ const raw=await openStore({databaseUrl:env.DATABASE_URL,dir}).catch(e=>fail('Can
 // across networks. Testnet keys stay unprefixed so the existing testnet beta keeps its data.
 const scope=a=>network==='testnet'?a:`${network}/${a}`,mine=k=>network==='testnet'?!k.includes('/'):k.startsWith(network+'/');
 const store={...raw,get:a=>raw.get(scope(a)),update:(a,fn)=>raw.update(scope(a),fn),remove:a=>raw.remove(scope(a)),addSession:(h,a,e)=>raw.addSession(h,scope(a),e),
- async session(h){const k=await raw.session(h);return k&&mine(k)?k.slice(network==='testnet'?0:network.length+1):null}};
+ async session(h){const k=await raw.session(h);return k&&mine(k)?k.slice(network==='testnet'?0:network.length+1):null},
+ addApiKey:(h,a)=>raw.addApiKey(h,scope(a)),
+ async apiKey(h){const k=await raw.apiKey(h);return k&&mine(k)?k.slice(network==='testnet'?0:network.length+1):null}};
 setInterval(()=>store.purge().catch(()=>{}),6e5).unref();
 const factory=factoryId?factoryClient({rpcUrl,network,factory:factoryId,walletUrl}):null;
 const provider=(factory||factoryClient({rpcUrl,network,factory:'none',walletUrl})).provider;
@@ -70,7 +72,7 @@ const validName=n=>typeof n==='string'&&n.length>=2&&n.length<=32&&/^[a-z0-9](?:
 // What the browser sees of an account: never a key, sealed or not.
 async function snapshot(account){
  const r=await store.get(account),p=r?.profile||{};
- return {account,network,factory:factoryId||null,workspace:r?.workspace||null,vault:p.vault?{vault:p.vault.vault,agent:p.vault.agent,createdAt:p.vault.createdAt}:null,pending:p.pending?{name:p.pending.name}:null,aiKey:Boolean(p.aiKey),createdAt:p.createdAt||null};
+ return {account,network,factory:factoryId||null,workspace:r?.workspace||null,vault:p.vault?{vault:p.vault.vault,agent:p.vault.agent,createdAt:p.vault.createdAt}:null,pending:p.pending?{name:p.pending.name}:null,aiKey:Boolean(p.aiKey),apiKeys:(p.apiKeys||[]).map(({hash,...k})=>k),createdAt:p.createdAt||null};
 }
 const paying=new Set();
 // Turns a request into what the server, the chain or NEAR AI did. Only these results reach the workspace.
@@ -151,8 +153,22 @@ async function act(c,account,req){
   if(typeof c.key!=='string'||c.key.trim().length<10||c.key.length>500)throw Error('Paste the API key from cloud.near.ai.');
   await setProfile(x=>({...x,aiKey:box.seal(c.key.trim())}));return snapshot(account);
  }
+ if(c.action==='api-key-create'){
+  const name=typeof c.name==='string'?c.name.trim():'';if(!name||name.length>40)throw Error('Name the key, for example "Research agent".');
+  if((profile.apiKeys||[]).length>=10)throw Error('You can have at most 10 API keys. Revoke one first.');
+  // Shown once. Only its SHA-256 hash is stored.
+  const key=`pg_${network==='mainnet'?'live':'test'}_${randomBytes(24).toString('base64url')}`,hash=sha(key);
+  await store.addApiKey(hash,account);
+  await setProfile(x=>({...x,apiKeys:[...(x.apiKeys||[]),{id:hash.slice(0,12),hash,name,pay:c.pay===true,prefix:key.slice(0,12),createdAt:new Date().toISOString()}]}));
+  return {...await snapshot(account),newKey:key};
+ }
+ if(c.action==='api-key-revoke'){
+  const k=(profile.apiKeys||[]).find(k=>k.id===c.id);if(!k)throw Error('Key not found.');
+  await raw.dropApiKey(k.hash);await setProfile(x=>({...x,apiKeys:(x.apiKeys||[]).filter(y=>y.id!==c.id)}));return snapshot(account);
+ }
  if(c.action==='delete-account'){
   if(c.confirm!==account)throw Error('Type your account name to confirm.');
+  for(const k of profile.apiKeys||[])await raw.dropApiKey(k.hash);
   await store.remove(account);clients.delete(account);return {deleted:true};
  }
  throw Error('Unknown action.');
@@ -178,6 +194,58 @@ async function devWallet(url,req,res){
  }
  return false;
 }
+// Agent API: REST under /api/v1 and an MCP server at /mcp, both authenticated with a customer's API key.
+// Agents run the same actions, rules and on-chain checks as the dashboard. They can never approve, freeze,
+// change limits or payees, or withdraw: those stay with the owner's wallet.
+const jobView=(w,j)=>{const r=w.receipts.find(r=>r.jobId===j.id);return {id:j.id,title:j.title,brief:j.brief,payee:j.payee,amount:j.amount,currency:'NEAR',status:j.status,created:j.created,delivery:j.deliverable||null,payment:j.payment?{id:j.payment.paymentId,awaitingApproval:j.status==='Awaiting approval'}:null,receipt:r?{route:r.settlement.route,txHash:r.settlement.txHash,explorer:r.settlement.explorer,paidAt:r.date}:null}};
+async function agentCall(account,key,name,a={}){
+ const job=async id=>{const w=(await snapshot(account)).workspace,j=w?.jobs.find(j=>j.id===id);if(!j)throw Error('Job not found.');return jobView(w,j)};
+ const run=async(c,id)=>{const s=await act(c,account,{headers:{}});return id?jobView(s.workspace,s.workspace.jobs.find(j=>j.id===id)):s};
+ if(name==='get_vault'){const r=await store.get(account),v=vaultFor(account,r?.profile||{});if(!v)return {configured:false,message:'The owner has not created a vault yet.'};const view=await vaultView(v);const w=r.workspace;return {...view,payees:view.recipients.map(a=>({account:a,label:w.payees[a]||null})),committed:w.jobs.filter(j=>['Working','Review','Awaiting approval'].includes(j.status)).reduce((s,j)=>s+j.amount,0)}}
+ if(name==='list_payees'){const r=await store.get(account),v=vaultFor(account,r?.profile||{});if(!v)return [];return (await v.recipients()).map(a=>({account:a,label:r.workspace.payees[a]||null}))}
+ if(name==='list_jobs'){const w=(await snapshot(account)).workspace;return w.jobs.filter(j=>!a.status||j.status===a.status).slice(0,100).map(j=>jobView(w,j))}
+ if(name==='get_job')return job(a.id);
+ if(name==='create_job'){const s=await run({action:'create',title:a.title,brief:a.brief,payee:a.payee,amount:typeof a.amount==='string'?Number(a.amount):a.amount});return jobView(s.workspace,s.workspace.jobs[0])}
+ if(name==='deliver_job')return run({action:'deliver',id:a.id,text:a.text},a.id);
+ if(name==='cancel_job')return run({action:'cancel',id:a.id},a.id);
+ if(name==='request_payment'){if(!key.pay)throw Object.assign(Error('This API key cannot request payments. Create a key with payments allowed.'),{status:403});return run({action:'pay',id:a.id},a.id)}
+ throw Object.assign(Error('Unknown tool.'),{status:404});
+}
+const TOOLS=[
+ {name:'get_vault',description:'Read the vault: spendable balance in NEAR, limits (automatic, per payment, daily), today\'s spending, whether it is frozen, its payees and the budget already committed to open jobs.',inputSchema:{type:'object',properties:{}}},
+ {name:'list_payees',description:'List the accounts the vault may pay, with their labels. Payments to any other account are refused by the vault.',inputSchema:{type:'object',properties:{}}},
+ {name:'list_jobs',description:'List jobs, newest first. Optionally filter by status: Working, Review, Awaiting approval, Paid or Cancelled.',inputSchema:{type:'object',properties:{status:{type:'string',enum:['Working','Review','Awaiting approval','Paid','Cancelled']}}}},
+ {name:'get_job',description:'Get one job, its delivery, and its payment or receipt.',inputSchema:{type:'object',properties:{id:{type:'string'}},required:['id']}},
+ {name:'create_job',description:'Create a job for an allowlisted payee with a budget in NEAR (at most 4 decimals). The budget must fit the per-payment limit and the balance not committed to other open jobs.',inputSchema:{type:'object',properties:{title:{type:'string',maxLength:100},brief:{type:'string',maxLength:2000},payee:{type:'string',description:'NEAR account on the allowlist'},amount:{type:'number',minimum:0.0001}},required:['title','brief','payee','amount']}},
+ {name:'deliver_job',description:'Record what was delivered for a job in progress (a summary, a link, an invoice number). The job then waits for payment review.',inputSchema:{type:'object',properties:{id:{type:'string'},text:{type:'string',maxLength:8000}},required:['id','text']}},
+ {name:'request_payment',description:'Ask the vault to pay a delivered job. At or below the automatic limit it is paid at once and returns a receipt with the NEAR transaction. Above it, the vault holds the payment and the owner approves or rejects it in their wallet; check back with get_job.',inputSchema:{type:'object',properties:{id:{type:'string'}},required:['id']}},
+ {name:'cancel_job',description:'Cancel a job that is in progress or in review and release its budget.',inputSchema:{type:'object',properties:{id:{type:'string'}},required:['id']}}
+];
+async function agentApi(url,req,res,json,body,ip){
+ const token=/^Bearer\s+(pg_(?:live|test)_[A-Za-z0-9_-]{32})$/.exec(req.headers.authorization||'')?.[1];
+ if(limited('agent-auth '+ip,300,6e4))return json(429,{error:'Too many requests. Try again in a minute.'});
+ const account=token&&await store.apiKey(sha(token)),record=account&&await store.get(account),key=record?.profile?.apiKeys?.find(k=>k.hash===sha(token));
+ if(!key)return json(401,{error:'Send a valid PayGate API key as "Authorization: Bearer pg_…". Create one in Settings.'},{'WWW-Authenticate':'Bearer'});
+ if(limited('action '+account,120,6e4))return json(429,{error:'Too many requests. Try again in a minute.'});
+ if(!key.lastUsedAt||Date.now()-Date.parse(key.lastUsedAt)>6e5)store.update(account,r=>({...r,profile:{...r.profile,apiKeys:(r.profile.apiKeys||[]).map(k=>k.hash===key.hash?{...k,lastUsedAt:new Date().toISOString()}:k)}})).catch(()=>{});
+ const fail=e=>json(e.status||400,{error:reason(e)});
+ if(url.pathname==='/mcp'){
+  if(req.method!=='POST')return json(405,{error:'This MCP server accepts POST requests (streamable HTTP, JSON responses).'},{Allow:'POST'});
+  let m;try{m=await body()}catch{return json(400,{jsonrpc:'2.0',id:null,error:{code:-32700,message:'Parse error'}})}
+  const reply=result=>json(200,{jsonrpc:'2.0',id:m.id??null,result}),error=(code,message)=>json(200,{jsonrpc:'2.0',id:m.id??null,error:{code,message}});
+  if(m.id===undefined){res.writeHead(202);return res.end()}
+  if(m.method==='initialize')return reply({protocolVersion:m.params?.protocolVersion||'2025-06-18',capabilities:{tools:{listChanged:false}},serverInfo:{name:'paygate',title:'PayGate',version:'1.0.0'},instructions:`PayGate lets you spend from ${account}'s NEAR vault within limits enforced on-chain. Create a job for an allowlisted payee, deliver the work, then request payment. Small payments go out at once; larger ones wait for the owner's wallet approval. You cannot change limits, payees or approvals.`});
+  if(m.method==='ping')return reply({});
+  if(m.method==='tools/list')return reply({tools:TOOLS.filter(t=>t.name!=='request_payment'||key.pay)});
+  if(m.method==='tools/call'){try{const out=await agentCall(account,key,m.params?.name,m.params?.arguments||{});return reply({content:[{type:'text',text:JSON.stringify(out,null,2)}],structuredContent:Array.isArray(out)?{items:out}:out,isError:false})}catch(e){return reply({content:[{type:'text',text:reason(e)}],isError:true})}}
+  return error(-32601,'Method not found');
+ }
+ const parts=url.pathname.replace(/^\/api\/v1\/?/,'').split('/').filter(Boolean),post=req.method==='POST';
+ let c={};if(post){try{c=await body()}catch{c={}}}
+ const route=!post&&parts[0]==='vault'&&parts.length===1?['get_vault']:!post&&parts[0]==='payees'&&parts.length===1?['list_payees']:!post&&parts[0]==='jobs'&&parts.length===1?['list_jobs',{status:url.searchParams.get('status')||undefined}]:!post&&parts[0]==='jobs'&&parts.length===2?['get_job',{id:parts[1]}]:post&&parts[0]==='jobs'&&parts.length===1?['create_job',c]:post&&parts[0]==='jobs'&&parts.length===3&&{deliver:1,pay:1,cancel:1}[parts[2]]?[{deliver:'deliver_job',pay:'request_payment',cancel:'cancel_job'}[parts[2]],{...c,id:parts[1]}]:null;
+ if(!route)return json(404,{error:'Not found. See the HTTP API in the docs.'});
+ try{return json(post&&route[0]==='create_job'?201:200,await agentCall(account,key,route[0],route[1]))}catch(e){return fail(e)}
+}
 const routes={'/':'index.html','/app.js':'app.js','/docs.js':'docs.js','/legal.js':'legal.js','/vendor/near-connect.js':'vendor/near-connect.js','/logo.svg':'logo.svg','/style.css':'style.css','/wallet-callback.html':'wallet-callback.html','/callback.js':'callback.js'},types={html:'text/html',js:'text/javascript',css:'text/css',svg:'image/svg+xml'};
 http.createServer(async(req,res)=>{
 const json=(status,data,headers={})=>{res.writeHead(status,{'Content-Type':'application/json','Cache-Control':'no-store',...headers});res.end(JSON.stringify(data))};
@@ -190,6 +258,7 @@ if(req.url==='/healthz'&&req.method==='GET')return json(200,{ok:true});if(!hosts
 try{
 const url=new URL(req.url,origins[0]),path=url.pathname,ip=ipOf(req),body=async()=>{let raw='';for await(const chunk of req){raw+=chunk;if(Buffer.byteLength(raw)>16384)throw Error('Request too large.')}const c=JSON.parse(raw);if(!c||typeof c!=='object'||Array.isArray(c))throw Error();return c};
 if(path.startsWith('/dev-wallet/')&&req.method==='GET'){if(await devWallet(url,req,res))return;return json(404,{error:'Not found.'})}
+if(path.startsWith('/api/v1/')||path==='/mcp')return agentApi(url,req,res,json,body,ip);
 if(path.startsWith('/api/')&&req.method==='POST'&&(req.headers['x-paygate']!=='1'||(req.headers.origin&&!origins.includes(req.headers.origin))))return json(403,{error:'Request origin rejected.'});
 if(path==='/api/config'&&req.method==='GET')return json(200,{network,factory:factoryId||null,ready:Boolean(factoryId),walletUrl,rpcUrl:NETWORKS[network]?.rpcUrl||null,explorer,minDeposit:0.4});
 if(path==='/api/session'&&req.method==='GET')return json(200,{account:await signedIn(req)});

@@ -8,7 +8,7 @@
 
 PayGate is a public, non-custodial service on NEAR. Anyone can sign in with their wallet and create a spending vault for their AI agent. The vault is a smart contract the customer owns: it pays only their payees, within their limits, and holds anything large until they approve it in their own wallet.
 
-[How it works](#how-it-works) · [Use PayGate](#using-paygate) · [Run your own](#run-your-own-paygate) · [Security model](#security-model) · [Contracts](#contract-reference) · [HTTP API](#http-api)
+[How it works](#how-it-works) · [Use PayGate](#using-paygate) · [Agent API](#agent-api-and-mcp) · [Run your own](#run-your-own-paygate) · [Security model](#security-model) · [Contracts](#contract-reference) · [HTTP API](#http-api)
 
 ![Node.js 22.22+](https://img.shields.io/badge/node-%E2%89%A522.22-1b3158) ![NEAR](https://img.shields.io/badge/chain-NEAR-1b3158) ![Contract tests](https://img.shields.io/badge/contract%20tests-26%20passing-2f7d55) ![License: MIT](https://img.shields.io/badge/license-MIT-1b3158)
 
@@ -26,17 +26,18 @@ PayGate is a public, non-custodial service on NEAR. Anyone can sign in with thei
 4. [What is real](#what-is-real)
 5. [Architecture](#architecture)
 6. [Using PayGate](#using-paygate)
-7. [Try it locally](#try-it-locally)
-8. [Run your own PayGate](#run-your-own-paygate)
-9. [Configuration](#configuration)
-10. [Security model](#security-model)
-11. [Contract reference](#contract-reference)
-12. [HTTP API](#http-api)
-13. [Testing and verification](#testing-and-verification)
-14. [Project structure](#project-structure)
-15. [Troubleshooting](#troubleshooting)
-16. [Limitations](#limitations)
-17. [Hackathon notes](#hackathon-notes)
+7. [Agent API and MCP](#agent-api-and-mcp)
+8. [Try it locally](#try-it-locally)
+9. [Run your own PayGate](#run-your-own-paygate)
+10. [Configuration](#configuration)
+11. [Security model](#security-model)
+12. [Contract reference](#contract-reference)
+13. [HTTP API](#http-api)
+14. [Testing and verification](#testing-and-verification)
+15. [Project structure](#project-structure)
+16. [Troubleshooting](#troubleshooting)
+17. [Limitations](#limitations)
+18. [Hackathon notes](#hackathon-notes)
 
 ---
 
@@ -68,6 +69,7 @@ A worst-case attack demo hijacks the agent and uses its real key to try 12 ways 
 | **On-chain rules** | Payee allowlist, automatic, per-payment and daily limits, one payment per job, held payments, freeze, and withdrawal that works while frozen. |
 | **Wallet approvals** | Approve, reject, freeze, change limits, add or remove payees, withdraw, each signed in the customer's connected wallet and checked on-chain. Other wallets and NEAR CLI work by pasting the transaction hash. |
 | **Jobs workflow** | Create, deliver, review, pay or hold, approve or reject, cancel. Budgets are checked against limits and against funds already committed. |
+| **Agent API and MCP** | Customers create scoped API keys so their own AI agents can read the vault, create jobs, deliver work and request payment over REST (`/api/v1`) or as MCP tools (`/mcp`). Agents can never approve, freeze, change limits or payees, or withdraw. |
 | **Bring your own AI** | Customers add their own NEAR AI Cloud key, stored encrypted, to let the agent do the work. Chat id, request and response hashes and the response signature are kept with the receipt. |
 | **Dollar values** | A live NEAR Intents 1Click quote values each payment at review time. Quotes are dry, so no swap is made. |
 | **Evidence** | Receipts with transaction links, SHA-256 hash-chain verification, JSON export and a NEAR AI Cloud attestation check. |
@@ -157,6 +159,29 @@ sequenceDiagram
 7. **Inspect** receipts and transactions in **Evidence**; **Freeze** or **Withdraw** at any time from **Controls** and **Treasury**.
 
 Job statuses: `Working` → `Review` → (`Awaiting approval`) → `Paid`, or `Cancelled` from Working or Review.
+
+## Agent API and MCP
+
+Your own AI agent can use PayGate directly. Create a key in **Settings → API keys for your agents**, choose whether it may request payments, and copy it once; PayGate stores only its hash.
+
+**MCP** (streamable HTTP at `/mcp`), for example in Claude Code:
+
+```sh
+claude mcp add --transport http paygate https://your-paygate/mcp --header "Authorization: Bearer pg_test_…"
+```
+
+Tools: `get_vault`, `list_payees`, `list_jobs`, `get_job`, `create_job`, `deliver_job`, `request_payment` (keys allowed to pay only), `cancel_job`.
+
+**REST** under `/api/v1`, with the same key as a Bearer token:
+
+```sh
+curl https://your-paygate/api/v1/jobs -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" \
+  -d '{"title":"Competitor pricing","brief":"Summarize three pricing pages","payee":"contractor.near","amount":0.05}'
+curl -X POST https://your-paygate/api/v1/jobs/PG-1a2b3c4d/deliver -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" -d '{"text":"Report link"}'
+curl -X POST https://your-paygate/api/v1/jobs/PG-1a2b3c4d/pay -H "Authorization: Bearer $KEY"
+```
+
+A payment at or below the automatic limit returns the job as `Paid`, with its NEAR transaction. A larger one returns `Awaiting approval`; the vault holds it until the owner approves in their wallet. Agents cannot approve, freeze, change limits or payees, or withdraw, and the vault refuses any payee outside the allowlist on-chain. Keys can be revoked at any time.
 
 ## Try it locally
 
@@ -345,7 +370,10 @@ POST requests need the header `X-PayGate: 1`. Account endpoints need a session.
 | `GET /api/state` | Account, vault and workspace; never any key |
 | `GET /api/vault` | Live balance, limits, daily spend, payees, held payments |
 | `GET /api/integrations`, `/api/verify`, `/api/attestation` | Services, receipt chain, enclave report |
-| `POST /api/action` | `vault-create`, `vault-confirm`, `create`, `deliver`, `run`, `quote`, `pay`, `confirm`, `owner`, `cancel`, `label`, `ai-key`, `delete-account` |
+| `GET /api/v1/vault`, `/payees`, `/jobs`, `/jobs/{id}` | Agent API reads (Bearer API key) |
+| `POST /api/v1/jobs`, `/jobs/{id}/deliver`, `/jobs/{id}/pay`, `/jobs/{id}/cancel` | Agent API actions |
+| `POST /mcp` | MCP server: `initialize`, `tools/list`, `tools/call` |
+| `POST /api/action` | `api-key-create`, `api-key-revoke`, `vault-create`, `vault-confirm`, `create`, `deliver`, `run`, `quote`, `pay`, `confirm`, `owner`, `cancel`, `label`, `ai-key`, `delete-account` |
 
 ## Testing and verification
 
@@ -366,6 +394,7 @@ POST requests need the header `X-PayGate: 1`. Account endpoints need a session.
 - sign-in, and vault creation through the factory, confirming on-chain that the vault has no keys and the agent has one restricted key;
 - automatic and approved payments, rejections, freeze, limits, payees and withdrawal;
 - forged approvals and injected results;
+- agent API keys over REST and MCP, read-only and revoked keys;
 - isolation between two customers, taken vault names, and forged and replayed sign-ins;
 - data deletion and the mobile layout.
 

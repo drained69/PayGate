@@ -57,6 +57,45 @@ npm run dev:chain</code></pre>
 <pre><code>near contract call-function as-transaction acme.paygate.example.near approve_payment \\
   json-args '{"id":7}' prepaid-gas '60 Tgas' attached-deposit '1 yoctoNEAR' \\
   sign-as you.near network-config mainnet sign-with-keychain send</code></pre>`},
+{id:'agent-api',title:'Agent API and MCP',html:`
+<p class="eyebrow">For agents</p><h1>Agent API and MCP</h1>
+<p class="lead">Your own AI agent can use PayGate directly: read the vault, create jobs, deliver work and request payment. The vault's rules apply exactly as they do to you in the dashboard.</p>
+<h2>1. Create a key</h2><p>In <b>Settings → API keys for your agents</b>, name the key and choose whether it can request payments. Copy it when it appears: PayGate stores only a hash. Keys start with <code>pg_live_</code> on mainnet and <code>pg_test_</code> elsewhere. Revoke a key at any time; agents using it stop at once.</p>
+<h2>2a. Connect over MCP</h2><p>The MCP server is at <code>/mcp</code> on your PayGate address (streamable HTTP, JSON responses). With Claude Code:</p>
+<pre><code>claude mcp add --transport http paygate https://your-paygate/mcp \\
+  --header "Authorization: Bearer pg_test_…"</code></pre>
+<p>Clients that only run local servers can use <code>mcp-remote</code>:</p>
+<pre><code>{"mcpServers":{"paygate":{"command":"npx","args":["mcp-remote","https://your-paygate/mcp","--header","Authorization: Bearer pg_test_…"]}}}</code></pre>
+<table><thead><tr><th>Tool</th><th>What it does</th></tr></thead><tbody>
+<tr><td><code>get_vault</code></td><td>Balance, limits, today's spending, frozen or not, payees, committed budget</td></tr>
+<tr><td><code>list_payees</code></td><td>Accounts the vault may pay</td></tr>
+<tr><td><code>list_jobs</code>, <code>get_job</code></td><td>Jobs with their delivery, payment and receipt</td></tr>
+<tr><td><code>create_job</code></td><td>Title, brief, payee and budget in NEAR</td></tr>
+<tr><td><code>deliver_job</code></td><td>Record what was delivered</td></tr>
+<tr><td><code>request_payment</code></td><td>Only for keys allowed to pay</td></tr>
+<tr><td><code>cancel_job</code></td><td>Release a job's budget</td></tr>
+</tbody></table>
+<h2>2b. Or call the REST API</h2>
+<pre><code>KEY=pg_test_…; BASE=https://your-paygate/api/v1
+curl $BASE/vault -H "Authorization: Bearer $KEY"
+curl $BASE/jobs -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" \\
+  -d '{"title":"Competitor pricing","brief":"Summarize three pricing pages","payee":"contractor.near","amount":0.05}'
+curl -X POST $BASE/jobs/PG-1a2b3c4d/deliver -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" \\
+  -d '{"text":"Report: https://example.com/report.pdf"}'
+curl -X POST $BASE/jobs/PG-1a2b3c4d/pay -H "Authorization: Bearer $KEY"</code></pre>
+<table><thead><tr><th>Endpoint</th><th>Purpose</th></tr></thead><tbody>
+<tr><td><code>GET /api/v1/vault</code></td><td>Vault, limits and payees</td></tr>
+<tr><td><code>GET /api/v1/payees</code></td><td>Allowlisted accounts</td></tr>
+<tr><td><code>GET /api/v1/jobs?status=Review</code></td><td>Jobs, optionally by status</td></tr>
+<tr><td><code>GET /api/v1/jobs/{id}</code></td><td>One job</td></tr>
+<tr><td><code>POST /api/v1/jobs</code></td><td>Create a job; returns 201</td></tr>
+<tr><td><code>POST /api/v1/jobs/{id}/deliver</code></td><td><code>{text}</code></td></tr>
+<tr><td><code>POST /api/v1/jobs/{id}/pay</code></td><td>Request payment</td></tr>
+<tr><td><code>POST /api/v1/jobs/{id}/cancel</code></td><td>Cancel</td></tr>
+</tbody></table>
+<h2>What a payment request returns</h2><p>At or below the automatic limit, the job comes back <code>Paid</code> with a receipt: route, NEAR transaction hash and explorer link. Above it, the job comes back <code>Awaiting approval</code>: the vault holds the payment until you approve or reject it in your wallet. The agent can poll <code>get_job</code>.</p>
+<h2>What an agent can never do</h2><ul><li>Approve or reject held payments, freeze or unfreeze, change limits or payees, or withdraw. These need your wallet.</li><li>Pay anyone outside your allowlist, or more than your limits. The vault refuses it on-chain.</li><li>See your keys. API responses never include them.</li></ul>
+<p>Errors return a JSON <code>{"error": "…"}</code> with status 400, 401 (missing or revoked key), 403 (key cannot pay), 404 or 429 (more than 120 requests a minute).</p>`},
 {id:'limits',title:'Limits and freeze',html:`
 <p class="eyebrow">Using PayGate</p><h1>Limits and freeze</h1>
 <p class="lead">Three limits decide how much the agent can move without you.</p>
@@ -151,6 +190,6 @@ railway up --service paygate</code></pre>
 <tr><td><code>create</code>, <code>deliver</code>, <code>run</code>, <code>pay</code>, <code>cancel</code></td><td>Job actions with <code>{id}</code> and their fields</td></tr>
 <tr><td><code>confirm</code></td><td><code>{id, txHash}</code>. Records a verified approval or rejection</td></tr>
 <tr><td><code>owner</code></td><td><code>{kind, …}</code>. Wallet link for <code>approve</code>, <code>reject</code>, <code>freeze</code>, <code>limits</code>, <code>payee</code>, <code>withdraw</code></td></tr>
-<tr><td><code>ai-key</code>, <code>label</code>, <code>delete-account</code></td><td>Settings, payee labels, data deletion</td></tr>
+<tr><td><code>ai-key</code>, <code>label</code>, <code>api-key-create</code>, <code>api-key-revoke</code>, <code>delete-account</code></td><td>Settings, payee labels, agent API keys, data deletion</td></tr>
 </tbody></table>`}
 ];

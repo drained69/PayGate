@@ -73,6 +73,34 @@ try{
  await viaWallet(page,()=>page.locator(`[data-account="${bob}"][data-action="remove-payee"]`).click());await toast('Wallet transaction confirmed');assert.equal(await page.locator(`form[data-account="${bob}"]`).count(),0);
  await nav('Treasury');await page.getByRole('heading',{name:'Waiting on-chain for your approval'}).waitFor();
  const before=await balance(alice);await page.getByLabel('Amount (NEAR)').fill('1');await viaWallet(page,()=>page.getByRole('button',{name:'Withdraw in wallet'}).click());await toast('Wallet transaction confirmed');assert.ok(await balance(alice)-before>BigInt(toYocto(0.99)));
+ // Agent API: a key made in Settings lets an agent run the same flow over REST and MCP, within the same rules.
+ await nav('Settings');await page.getByLabel('Key name').fill('Research agent');await page.getByRole('button',{name:'Create key'}).click();
+ const apiKey=(await page.locator('#new-key').textContent()).trim();assert.match(apiKey,/^pg_test_[A-Za-z0-9_-]{32}$/);await page.locator('#key-dialog .close').click();
+ const agentReq=async(method,path,data,key=apiKey)=>{const r=await page.request.fetch(url+path,{method,headers:{Authorization:'Bearer '+key,'Content-Type':'application/json'},data});return {status:r.status(),body:await r.json().catch(()=>null)}};
+ assert.equal((await agentReq('GET','/api/v1/vault',undefined,'pg_test_'+'x'.repeat(32))).status,401);
+ const v1=(await agentReq('GET','/api/v1/vault')).body;assert.equal(v1.vault,vault);assert.deepEqual(v1.payees.map(p=>p.account),[payee]);
+ const viaApi=await balance(payee);
+ const made=await agentReq('POST','/api/v1/jobs',{title:'Agent job',brief:'Made over REST',payee,amount:0.05});assert.equal(made.status,201);
+ await agentReq('POST',`/api/v1/jobs/${made.body.id}/deliver`,{text:'Delivered by the agent'});
+ const paidApi=(await agentReq('POST',`/api/v1/jobs/${made.body.id}/pay`)).body;assert.equal(paidApi.status,'Paid');assert.equal(paidApi.receipt.route,'auto');
+ assert.equal(await balance(payee)-viaApi,BigInt(toYocto(0.05)));
+ const mcp=async(method,params,key=apiKey)=>(await agentReq('POST','/mcp',{jsonrpc:'2.0',id:1,method,params},key)).body;
+ assert.equal((await mcp('initialize',{protocolVersion:'2025-06-18',capabilities:{},clientInfo:{name:'test',version:'1'}})).result.serverInfo.name,'paygate');
+ assert.ok((await mcp('tools/list',{})).result.tools.some(t=>t.name==='request_payment'));
+ const call=async(name,args,key)=>JSON.parse((await mcp('tools/call',{name,arguments:args},key)).result.content[0].text);
+ const big=await call('create_job',{title:'Agent large job',brief:'Over MCP',payee,amount:0.3});await call('deliver_job',{id:big.id,text:'Done'});
+ assert.equal((await call('request_payment',{id:big.id})).status,'Awaiting approval','larger payments still wait for the owner');
+ assert.equal((await mcp('tools/call',{name:'create_job',arguments:{title:'x',brief:'y',payee:'attacker.near',amount:0.01}})).result.isError,true);
+ assert.equal((await agentReq('POST','/api/v1/vault/freeze',{})).status,404,'agents have no owner actions');
+ // A key without payment rights cannot request payment.
+ await page.getByLabel('Key name').fill('Read only');await page.locator('#api-key-form input[name=pay]').uncheck();await page.getByRole('button',{name:'Create key'}).click();
+ await page.locator('#key-dialog[open] #new-key').filter({hasNotText:apiKey}).waitFor();const readKey=(await page.locator('#new-key').textContent()).trim();assert.notEqual(readKey,apiKey);await page.locator('#key-dialog .close').click();
+ assert.equal((await mcp('tools/list',{},readKey)).result.tools.some(t=>t.name==='request_payment'),false);
+ assert.equal((await agentReq('POST',`/api/v1/jobs/${big.id}/pay`,{},readKey)).status,403);
+ // Revoking a key stops it at once.
+ await page.getByRole('row').filter({hasText:'Read only'}).getByRole('button',{name:'Revoke'}).click();await toast('Key revoked.');
+ assert.equal((await agentReq('GET','/api/v1/jobs',undefined,readKey)).status,401);
+ assert.equal(JSON.stringify(await (await page.request.get(url+'/api/state')).json()).includes(apiKey),false,'keys are never sent back');
  // A second customer sees nothing of the first and cannot claim their vault or name.
  const other=await open();await other.goto(url);await viaWallet(other,()=>other.locator('#signin').click(),bob);await other.getByRole('heading',{name:'Create your vault.'}).waitFor();
  const theirs=await (await other.request.get(url+'/api/state')).json();assert.equal(theirs.account,bob);assert.equal(theirs.vault,null);assert.equal(theirs.workspace.jobs.length,0);
@@ -98,5 +126,5 @@ try{
  await nav('Controls');await page.screenshot({path:'test-results/chain-controls.png',fullPage:true});
  await page.setViewportSize({width:390,height:844});await nav('Jobs');await page.screenshot({path:'test-results/chain-mobile.png',fullPage:true});assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
  assert.deepEqual(errors,[]);
- console.log('Chain checks passed: public pages, wallet sign-in, vault from the factory (keyless vault, restricted agent, owner on-chain), keys kept from the browser, payee labels, freeze, NEAR AI key, limit errors, agent delivery, USD quote, automatic and approved payments, rejection, receipts and transactions, forged approvals and injected results, limits, payees, withdrawal, customer isolation, taken names, vault found on-chain without a hash, full refund of a large failed deposit, forged and replayed sign-ins, data deletion, mobile layout.');
+ console.log('Chain checks passed: public pages, wallet sign-in, vault from the factory (keyless vault, restricted agent, owner on-chain), keys kept from the browser, payee labels, freeze, NEAR AI key, limit errors, agent delivery, USD quote, automatic and approved payments, rejection, receipts and transactions, forged approvals and injected results, limits, payees, withdrawal, agent API keys, REST and MCP payments within limits, read-only and revoked keys, customer isolation, taken names, vault found on-chain without a hash, full refund of a large failed deposit, forged and replayed sign-ins, data deletion, mobile layout.');
 }finally{await browser?.close();await app.stop();await stub.close()}

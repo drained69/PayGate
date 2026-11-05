@@ -72,3 +72,9 @@ test('the file store applies concurrent updates in order and deletes cleanly',as
  await store.remove('a.near');assert.equal(await store.get('a.near'),null);assert.equal(await store.session('h'),null);
  await store.update('mainnet/b.near',r=>r);assert.equal((await store.get('mainnet/b.near')).account,'mainnet/b.near');assert.equal(await store.get('b.near'),null,'network-scoped keys stay separate');
 });
+test('the agent API needs a valid key and the MCP endpoint accepts only POST',async()=>{
+ assert.equal((await call('/api/v1/vault')).status,401);
+ assert.equal((await call('/api/v1/vault',{headers:{Authorization:'Bearer pg_test_'+'a'.repeat(32)}})).status,401);
+ assert.equal((await call('/api/v1/jobs',{method:'POST',body:{},headers:{Authorization:'Bearer nope'}})).status,401);
+ assert.match((await call('/mcp',{method:'POST',body:{jsonrpc:'2.0',id:1,method:'tools/list'}})).headers['www-authenticate'],/Bearer/);
+});
