@@ -64,7 +64,7 @@ A worst-case attack demo hijacks the agent and uses its real key to try 12 ways 
 | Area | What customers get |
 | --- | --- |
 | **Wallet sign-in** | NEP-413 signed-message sign-in through NEAR Connect (Meteor, HOT, Intear, Nightly, Ledger, OKX and more), verified against the account's full-access keys on-chain. Single-use nonces, bound to the site. |
-| **One-click vault** | A keyless factory creates the customer's vault and restricted agent from one signed transaction, and refunds them if a step fails. Minimum deposit about 2.34 NEAR, mostly storage for the vault's own copy of its code. |
+| **One-click vault** | A keyless factory creates the customer's vault and restricted agent from one signed transaction, and refunds them if a step fails. Minimum deposit about 1.9 NEAR with the gas relayer on (2.18 without), mostly storage for the vault's own copy of its code, which the owner gets back by closing the vault. |
 | **Fixed code** | The keyless factory stores the vault code once and copies exactly that code into each vault. Each vault's code hash matches the factory's `get_config().vault_code`, and nobody can upgrade customer vaults later. |
 | **On-chain rules** | Payee allowlist, automatic, per-payment and daily limits, one payment per job, held payments, freeze, and withdrawal that works while frozen. |
 | **Wallet approvals** | Approve, reject, freeze, change limits, add or remove payees, withdraw, each signed in the customer's connected wallet and checked on-chain. Other wallets and NEAR CLI work by pasting the transaction hash. |
@@ -155,7 +155,7 @@ sequenceDiagram
 ## Using PayGate
 
 1. **Sign in** with **Sign in with NEAR** and approve the message in your wallet.
-2. **Create your vault.** Choose a name, add payees, set limits and funding (at least about 2.34 NEAR: 0.3 funds the agent account and its gas, and about 2 NEAR stays locked in your vault for its code and storage), then sign one transaction.
+2. **Create your vault.** Choose a name, add payees, set limits and funding (at least about 1.9 NEAR with the gas relayer on, 2.18 without: 0.02 or 0.3 funds the agent account, and about 1.87 NEAR stays locked in your vault for its code and storage until you close it), then sign one transaction.
 3. **Optionally add your NEAR AI key** in **Settings** so the agent can do the work.
 4. **Create a job** with a brief, a payee and a budget in NEAR.
 5. **Deliver.** **Run agent**, or **Record delivery** to describe what the payee delivered.
@@ -235,11 +235,17 @@ Run once, from your own machine, with an operator account. The operator key is u
 | Cost | Amount |
 | --- | --- |
 | Storing the factory code (locked) | about 1.5 NEAR |
-| Storing the vault code in the factory (locked) | about 1.9 NEAR |
-| Buffer left in the factory for refunds | about 2.6 NEAR |
+| Storing the vault code in the factory (locked) | about 1.8 NEAR |
+| Buffer left in the factory for refunds | about 2.7 NEAR |
 | **Recommended `FACTORY_FUND`** | **6 NEAR** |
 
-Nothing is burned. Each customer's vault holds its own copy of the code, so each vault locks about 1.9 NEAR of the customer's deposit for storage. That is why the minimum deposit is about 2.34 NEAR.
+Nothing is burned. Each customer's vault holds its own copy of the code, so each vault locks about 1.87 NEAR of the customer's deposit for its code and state. The agent account gets 0.3 NEAR, or only 0.02 NEAR when the gas relayer is on, because the relayer then pays its gas. So the minimum deposit is about 2.18 NEAR, or about 1.9 NEAR with a relayer. Closing a vault returns its NEAR, including that storage, to the owner.
+
+| Customer cost | Without relayer | With relayer |
+| --- | --- | --- |
+| Vault code and state (returned on close) | about 1.87 NEAR | about 1.87 NEAR |
+| Agent account | 0.3 NEAR | 0.02 NEAR |
+| **Minimum deposit** | **about 2.18 NEAR** | **about 1.9 NEAR** |
 
 Without the confirmation flag, the script checks everything and prints a summary. It sends nothing.
 
@@ -334,7 +340,7 @@ Platform deployment only: `NEAR_OPERATOR_ACCOUNT`, `NEAR_OPERATOR_KEY`, `FACTORY
 - **Server breach.** Someone with the server and `PAYGATE_SECRET` can use agent keys to spend up to each customer's automatic limit per payment and daily limit, only to that customer's payees. They cannot approve held payments, change rules or withdraw.
 - **Fixed daily windows.** Spending at the end of one window and the start of the next can reach twice the daily limit in a short time.
 - **Agent quotas.** A hijacked agent can use its 50 daily requests or fill the queue of 20 held payments until the customer rejects them.
-- **Gas allowance.** Without a relayer, the agent's 0.25 NEAR allowance eventually runs out; the customer can name a new agent with `set_agent`. With a relayer, the relayer pays instead; someone with the server could spend the relayer's gas money, never customers' funds.
+- **Gas allowance.** Without a relayer, the agent's 0.295 NEAR allowance lasts about 35 payment requests at 40 Tgas each, and then runs out; the customer can name a new agent with `set_agent`. With a relayer, the relayer pays instead; someone with the server could spend the relayer's gas money, never customers' funds.
 - **Cross-chain payouts.** The owner's wallet shows the NEAR Intents deposit address, not the destination address, so the owner relies on PayGate's quote.
 - **USDC vault storage.** A USDC vault needs a little NEAR for storage. If it runs out, payments fail until the owner sends NEAR to the vault; no funds are lost.
 - **No independent audit yet.** An in-house pre-mainnet review is recorded in [docs/MAINNET.md](docs/MAINNET.md).
@@ -358,6 +364,7 @@ Source: [contract/src/lib.rs](contract/src/lib.rs). Built: `contract/res/paygate
 | `withdraw(amount)` | Owner, 1 yocto | Sends NEAR, or the vault's token, to the owner, even while frozen |
 | `pay_external(recipient, amount, job_id)` | Owner, 1 yocto | Token vaults: registers `recipient` with the token and pays it, within the limits. Used for NEAR Intents deposit addresses |
 | `withdraw_near(amount)` | Owner, 1 yocto | Token vaults: returns NEAR not needed for storage to the owner |
+| `close()` | Owner, 1 yocto | Deletes the vault and sends all of its NEAR, including its storage, to the owner. Only when no payment is held, no transfer is in flight and no tokens are left |
 | `get_policy()`, `get_pending()`, `get_recipients()` | View | State |
 
 Events (`paygate_vault`): `payment_sent`, `payment_pending`, `payment_rejected`, `payment_failed`, `freeze_changed`. Constants: 24-hour window, 20 held payments, 50 requests per window, job ids up to 64 characters.
@@ -369,8 +376,8 @@ Source: [contract/factory/src/lib.rs](contract/factory/src/lib.rs). Built: `cont
 | Method | Caller | Description |
 | --- | --- | --- |
 | `new(vault_code)` | The factory itself, once | Stores the vault code (borsh bytes); `get_config().vault_code` is its SHA-256 |
-| `create_vault(name, agent_key, limits, recipients, token?)` | Anyone, at least `get_config().min_deposit` (about 2.34 NEAR) | Creates `name.factory` owned by the caller and `name-agent.factory` with one restricted key |
-| `get_config()` | View | Code hash, agent funding, minimum deposit, token support |
+| `create_vault(name, agent_key, limits, recipients, token?, agent_fund?)` | Anyone, at least `vault_fund` plus the agent funding | Creates `name.factory` owned by the caller and `name-agent.factory` with one restricted key. `agent_fund` is 0.02 to 1 NEAR, default 0.3; the key's allowance is that minus 0.005 |
+| `get_config()` | View | Code hash, `vault_fund`, default and minimum agent funding, `min_deposit`, token and external-payout support |
 
 Names are 2–32 lowercase letters, digits or single dashes and cannot end in `-agent`. Events (`paygate_factory`): `vault_created`, `vault_failed`, `agent_failed`.
 

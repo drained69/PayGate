@@ -51,10 +51,12 @@ const usdc=env.PAYGATE_USDC||USDC[network]||null;
 if(usdc&&!isAccountId(usdc))fail('PAYGATE_USDC is not a valid account.');
 // Only factories built with token support can create USDC vaults; older ones would silently create NEAR vaults.
 // The minimum deposit comes from the factory: storage for the vault's code and state, plus the agent's funding.
-let factoryTokens=false,factoryExternal=false,minDeposit=0.4;
+let factoryTokens=false,factoryExternal=false,minDeposit=0.4,agentFund=null;
 const provider=(factory||factoryClient({rpcUrl,network,factory:'none',walletUrl})).provider;
 // Read at start and every few minutes, so a slow or failed first read never leaves features off until a restart.
-const readFactory=()=>factory?.config().then(c=>{factoryTokens=c?.tokens===true;factoryExternal=c?.external_payouts===true;if(c?.min_deposit)minDeposit=Math.ceil(Number(toNear(c.min_deposit))*100)/100}).catch(()=>{});
+const readFactory=()=>factory?.config().then(c=>{factoryTokens=c?.tokens===true;factoryExternal=c?.external_payouts===true;if(c?.min_deposit)minDeposit=Math.ceil(Number(toNear(c.min_deposit))*100)/100;
+ // With a gas relayer, agents pay no gas, so they get only the factory's minimum funding.
+ agentFund=relayer&&c?.min_agent_fund&&c?.vault_fund?Number(toNear(c.min_agent_fund)):null;if(agentFund)minDeposit=Math.ceil((Number(toNear(c.vault_fund))+agentFund)*100)/100}).catch(()=>{});
 readFactory();if(factory)setInterval(readFactory,3e5).unref();
 // Cross-chain payouts go through NEAR Intents 1Click, which works on mainnet only. PAYGATE_CROSSCHAIN=on or off overrides that.
 if(env.PAYGATE_CROSSCHAIN&&!['on','off'].includes(env.PAYGATE_CROSSCHAIN))fail('PAYGATE_CROSSCHAIN must be on or off.');
@@ -193,6 +195,7 @@ async function act(c,account,req){
   if(c.kind==='payee'){if(!isAccountId(c.account))throw Error('Enter a valid NEAR account, such as name.near.');if(typeof c.allowed!=='boolean')throw Error('Invalid payee change.');return link('set_recipient',{recipient:c.account,allowed:c.allowed})}
   if(c.kind==='limits'){const l={auto_limit:amount(c.auto,'limits',v.decimals),max_payment:amount(c.max,'limits',v.decimals),daily_limit:amount(c.daily,'limits',v.decimals)};if(!(c.auto<=c.max&&c.max<=c.daily))throw Error('Limits must satisfy automatic ≤ maximum payment ≤ daily.');return link('set_limits',{limits:l})}
   if(c.kind==='withdraw')return link('withdraw',{amount:amount(c.amount,'an amount',v.decimals)});
+  if(c.kind==='close')return link('close',{});
   if(c.kind==='withdraw-near'){if(!v.token)throw Error('Use the withdrawal form for a NEAR vault.');if((await v.policy()).nearBalance==null)throw Error('This vault was created before NEAR withdrawals existed.');return link('withdraw_near',{amount:amount(c.amount,'an amount',24)})}
   // USDC deposits register the vault with the token and send the USDC in one wallet transaction.
   if(c.kind==='deposit'){if(!v.token)throw Error('Send NEAR to the vault account from any wallet.');return v.tokenLink([{method:'storage_deposit',args:{account_id:v.vault,registration_only:true},deposit:TOKEN_STORAGE},{method:'ft_transfer_call',args:{receiver_id:v.vault,amount:amount(c.amount,'an amount',v.decimals),msg:''},deposit:'1',gas:100000000000000n}],callbackFor(req))}
@@ -206,7 +209,7 @@ async function act(c,account,req){
   const token=c.currency==='USDC'?usdc:null;if(c.currency==='USDC'&&!(usdc&&factoryTokens))throw Error('USDC vaults are not available on this PayGate yet.');
   const dec=token?6:24,limits={auto_limit:amount(c.auto,'limits',dec),max_payment:amount(c.max,'limits',dec),daily_limit:amount(c.daily,'limits',dec)};
   if(!(c.auto<=c.max&&c.max<=c.daily))throw Error('Limits must satisfy automatic ≤ maximum payment ≤ daily.');
-  if(typeof c.fund!=='number'||!(c.fund>=minDeposit)||c.fund>1e6)throw Error(`Fund the vault with at least ${minDeposit} NEAR: 0.3 pays for the agent account and its gas, the rest for the vault's code and storage.`);
+  if(typeof c.fund!=='number'||!(c.fund>=minDeposit)||c.fund>1e6)throw Error(`Fund the vault with at least ${minDeposit} NEAR: ${agentFund??0.3} pays for the agent account, the rest for the vault's code and storage.`);
   const payees=[...new Set((Array.isArray(c.payees)?c.payees:[]).map(p=>String(p).trim().toLowerCase()).filter(Boolean))];
   if(payees.length>20)throw Error('Add at most 20 payees now. You can add more later.');
   for(const p of payees){if(!isAccountId(p))throw Error(`${p} is not a valid NEAR account.`);if(!await factory.exists(p))throw Error(`${p} does not exist on ${network}. A payment to it would fail.`)}
@@ -214,7 +217,7 @@ async function act(c,account,req){
   const agentKey=KeyPair.fromRandom('ed25519'),publicKey=agentKey.getPublicKey().toString();
   // Earlier attempts are kept: a wallet may still sign an older link, and its agent key must not be lost.
   await setProfile(p=>({...p,pending:{name:c.name,publicKey,agentKey:box.seal(agentKey.toString()),createdAt:new Date().toISOString()},attempts:[{name:c.name,publicKey,agentKey:box.seal(agentKey.toString()),token},...(p.attempts||[])].slice(0,5)}));
-  return factory.createLink({owner:account,name:c.name,agentKey:publicKey,limits,payees,fund:c.fund,token,callbackUrl:callbackFor(req)});
+  return factory.createLink({owner:account,name:c.name,agentKey:publicKey,limits,payees,fund:c.fund,token,agentFund,callbackUrl:callbackFor(req)});
  }
  if(c.action==='vault-confirm'){
   if(v)throw Error('You already have a vault.');
@@ -228,6 +231,12 @@ async function act(c,account,req){
   for(const a of attempts){try{await save(a,await factory.confirmCreated(c.txHash,{owner:account,name:a.name,agentKey:a.publicKey}));return snapshot(account)}catch(e){last=e;if(/taken|was not/.test(e.message))break}}
   if(/taken|was not/.test(last?.message))await setProfile(x=>{delete x.pending;delete x.attempts;return x});
   throw last;
+ }
+ // Closing deletes the vault on-chain; PayGate then forgets it and its agent key, and keeps the receipts.
+ if(c.action==='vault-closed'){
+  need(v);await v.confirmOwner(c.txHash,['close'],()=>true);
+  if(await provider.viewAccount({accountId:v.vault,blockQuery:{finality:'optimistic'}}).then(()=>true,()=>false))throw Error('The vault still exists. It was not closed.');
+  clients.delete(account);await setProfile(x=>{delete x.vault;return x});return snapshot(account);
  }
  if(c.action==='vault-cancel'){await setProfile(x=>{delete x.pending;return x});return snapshot(account)}
  if(c.action==='alerts-webhook'){
@@ -371,7 +380,7 @@ if(tg&&path===tgPath&&req.method==='POST'){if(req.headers['x-telegram-bot-api-se
 if(path.startsWith('/dev-wallet/')&&req.method==='GET'){if(await devWallet(url,req,res))return;return json(404,{error:'Not found.'})}
 if(path.startsWith('/api/v1/')||path==='/mcp')return agentApi(url,req,res,json,body,ip);
 if(path.startsWith('/api/')&&req.method==='POST'&&(req.headers['x-paygate']!=='1'||(req.headers.origin&&!origins.includes(req.headers.origin))))return json(403,{error:'Request origin rejected.'});
-if(path==='/api/config'&&req.method==='GET')return json(200,{network,factory:factoryId||null,ready:Boolean(factoryId),walletUrl,rpcUrl:NETWORKS[network]?.rpcUrl||null,explorer,minDeposit,telegram:Boolean(tgBot),usdc:Boolean(usdc&&factoryTokens),crossChain:Boolean(crossChainWanted&&factoryExternal&&usdc),chains:crossChainWanted&&factoryExternal&&usdc?await crossChainAssets().then(a=>a.map(({chain,name})=>({chain,name}))).catch(()=>[]):[]});
+if(path==='/api/config'&&req.method==='GET')return json(200,{network,factory:factoryId||null,ready:Boolean(factoryId),walletUrl,rpcUrl:NETWORKS[network]?.rpcUrl||null,explorer,minDeposit,agentFund:agentFund??0.3,telegram:Boolean(tgBot),usdc:Boolean(usdc&&factoryTokens),crossChain:Boolean(crossChainWanted&&factoryExternal&&usdc),chains:crossChainWanted&&factoryExternal&&usdc?await crossChainAssets().then(a=>a.map(({chain,name})=>({chain,name}))).catch(()=>[]):[]});
 if(path==='/api/session'&&req.method==='GET')return json(200,{account:await signedIn(req)});
 if(path==='/api/auth/challenge'&&req.method==='POST'){
  if(limited('challenge '+ip,30,6e5))return json(429,{error:'Too many sign-in attempts. Try again in a few minutes.'});

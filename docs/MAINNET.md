@@ -57,7 +57,7 @@ The review covered the vault and factory contracts, the server (sign-in, session
    NEAR_NETWORK=mainnet NEAR_OPERATOR_ACCOUNT=you.near FACTORY_FUND=6 npm run platform:deploy -- --yes-mainnet
    ```
 
-   About 3.4 NEAR stays locked for storage and about 2.6 NEAR stays as a refund buffer. Nothing is burned. The script deletes the factory's key, so check the printed vault hash against the SHA-256 of `contract/res/paygate_vault.wasm`. Each customer's vault locks about 1.9 NEAR of their deposit for its own copy of the code, so the minimum deposit is about 2.34 NEAR.
+   About 3.3 NEAR stays locked for storage and about 2.7 NEAR stays as a refund buffer. Nothing is burned. The script deletes the factory's key, so check the printed vault hash against the SHA-256 of `contract/res/paygate_vault.wasm`. Each customer's vault locks about 1.87 NEAR of their deposit for its own copy of the code and its state, returned when they close it. The minimum deposit is about 1.9 NEAR with the relayer on, 2.18 without.
 
 3. **Create a separate mainnet service.** Keep testnet running for rehearsals. The mainnet service needs its own Postgres and its own `PAYGATE_SECRET`, stored in a password manager.
 
@@ -74,7 +74,7 @@ The review covered the vault and factory contracts, the server (sign-in, session
    Optional variables:
    - `ONECLICK_JWT` removes the 1Click fee.
    - `TELEGRAM_BOT_TOKEN` turns on Telegram alerts.
-   - `PAYGATE_RELAYER_ACCOUNT` and `PAYGATE_RELAYER_KEY` set a gas relayer. Use an account that holds only gas money.
+   - `PAYGATE_RELAYER_ACCOUNT` and `PAYGATE_RELAYER_KEY` set a gas relayer. Use an account that holds only gas money. Recommended: it lowers each customer's minimum deposit by 0.28 NEAR, at a cost to you of roughly 0.001 to 0.003 NEAR of gas per payment request. Agents created while it is on get only 0.02 NEAR; if you later turn it off, their owners should name a new agent with `set_agent`.
 
 4. **Check it from outside.** Run `npm run check:deployed -- https://your-domain`. Then sign in with your own wallet, create a vault with a small balance and make one payment of each kind:
    - automatic;

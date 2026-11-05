@@ -71,7 +71,7 @@ try{
  await nav('Jobs');await row('Small job').getByRole('button',{name:'Review & pay'}).click();await page.getByRole('button',{name:'Pay 0.05 NEAR'}).click();await toast('Paid from the vault.');
  assert.equal(await balance(payee)-start,BigInt(toYocto(0.05)));
  // The relayer paid the gas: the agent's own allowance and balance did not move.
- const agentKeyAfter=(await provider.viewAccessKeyList({accountId:agent,blockQuery:{finality:'optimistic'}})).keys[0].access_key.permission.FunctionCall.allowance;assert.equal(agentKeyAfter,toYocto(0.25),'agent gas allowance untouched');
+ const agentKeyAfter=(await provider.viewAccessKeyList({accountId:agent,blockQuery:{finality:'optimistic'}})).keys[0].access_key.permission.FunctionCall.allowance;assert.equal(agentKeyAfter,toYocto(0.015),'agent gas allowance untouched');
  assert.match(await page.request.get(url+'/api/integrations').then(r=>r.text()),/relayer\.sandbox pays your agent/);
  await create('Large job',0.3);await page.locator('#job-dialog').waitFor({state:'hidden'});
  await row('Large job').getByRole('button',{name:'Record delivery'}).click();await page.getByLabel('Delivery').fill('Report: https://example.com/report.pdf');await page.getByRole('button',{name:'Save delivery'}).click();await toast('Delivery recorded');
@@ -131,8 +131,9 @@ try{
  const other=await open();await other.goto(url);await viaWallet(other,()=>other.locator('#signin').click(),bob);await other.getByRole('heading',{name:'Create your vault.'}).waitFor();
  const theirs=await (await other.request.get(url+'/api/state')).json();assert.equal(theirs.account,bob);assert.equal(theirs.vault,null);assert.equal(theirs.workspace.jobs.length,0);
  assert.match((await post(other,{action:'pay',id:rejected})).error,/Create your vault first/);
- assert.match((await post(other,{action:'vault-create',name:'cheap',fund:2,auto:0.1,max:0.5,daily:1,payees:[]})).error,/at least 2\.34 NEAR/,'the minimum comes from the factory');
- assert.equal((await (await other.request.get(url+'/api/config')).json()).minDeposit,2.34);
+ assert.match((await post(other,{action:'vault-create',name:'cheap',fund:1.5,auto:0.1,max:0.5,daily:1,payees:[]})).error,/at least 1\.9 NEAR/,'the minimum comes from the factory');
+ const cfg=await (await other.request.get(url+'/api/config')).json();assert.deepEqual([cfg.minDeposit,cfg.agentFund],[1.9,0.02],'with a relayer, agents get only storage money');
+ assert.ok((await provider.viewAccount({accountId:agent,blockQuery:{finality:'optimistic'}})).amount<BigInt(toYocto(0.021)),'the relayer-paid agent holds only about 0.02 NEAR');
  assert.equal((await provider.viewAccount({accountId:vault,blockQuery:{finality:'optimistic'}})).code_hash,(await provider.callFunction({contractId:factory,method:'get_config',args:{},blockQuery:{finality:'optimistic'}})).vault_code,'each vault runs exactly the code the factory holds');
  assert.match((await post(other,{action:'vault-create',name:'acme',fund:3,auto:0.1,max:0.5,daily:1,payees:[]})).error,/taken/);
  assert.match((await post(other,{action:'vault-confirm',txHash:s.workspace.receipts[0].settlement.txHash})).error,/Start creating a vault first/);
@@ -141,6 +142,12 @@ try{
  await accountFor(app.rpcUrl,bob,customers[bob]).signAndSendTransaction({receiverId:tx.receiverId,actions:tx.actions});
  assert.equal((await post(other,{action:'vault-confirm'})).vault.vault,`bobco.${factory}`);
  assert.ok(Number(await provider.callFunction({contractId:`bobco.${factory}`,method:'get_policy',args:{},blockQuery:{finality:'optimistic'}}).then(p=>BigInt(p.balance)))>0.69e24,'the rest of the deposit reaches the vault');
+ // Closing deletes the vault and returns all of its NEAR, including the storage its code locked.
+ const beforeClose=await balance(bob),closeLink=(await post(other,{action:'owner',kind:'close'})).url,closeTx=decodeTransaction(Buffer.from(new URL(closeLink,url).searchParams.get('transactions'),'base64'));
+ const closed=await accountFor(app.rpcUrl,bob,customers[bob]).signAndSendTransaction({receiverId:closeTx.receiverId,actions:closeTx.actions});
+ assert.equal((await post(other,{action:'vault-closed',txHash:closed.transaction.hash})).vault,null);
+ assert.equal(await provider.viewAccount({accountId:`bobco.${factory}`,blockQuery:{finality:'optimistic'}}).then(()=>true,()=>false),false,'the vault account is gone');
+ assert.ok(await balance(bob)-beforeClose>BigInt(toYocto(2.9)),'closing returned the vault balance and its code storage');
  // A large deposit on a taken name comes back in full, even though it is far larger than the factory's buffer.
  const bobBefore=await balance(bob);await accountFor(app.rpcUrl,bob,customers[bob]).callFunctionRaw({contractId:factory,methodName:'create_vault',args:{name:'acme',agent_key:KeyPair.fromRandom('ed25519').getPublicKey().toString(),limits:{auto_limit:toYocto(0.1),max_payment:toYocto(0.5),daily_limit:toYocto(1)},recipients:[]},deposit:BigInt(toYocto(10)),gas:200000000000000n});
  let lost;for(let i=0;i<15;i++){lost=bobBefore-await balance(bob);if(lost<BigInt(toYocto(0.01)))break;await new Promise(d=>setTimeout(d,1000))}assert.ok(lost<BigInt(toYocto(0.01)),'a failed creation must be refunded');

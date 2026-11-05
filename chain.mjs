@@ -1,7 +1,9 @@
 import {readFile} from 'node:fs/promises';
 import {createHash} from 'node:crypto';
 import {Account,JsonRpcProvider,FailoverRpcProvider,KeyPair,KeyPairSigner,PublicKey,actions,buildDelegateAction,createTransaction,encodeTransaction,baseDecode,baseEncode,nearToYocto} from 'near-api-js';
-const TGAS=1000000000000n,ONE_YOCTO=1n,GAS=60n*TGAS,UNIT=10n**20n;
+// A payment request uses about 25 Tgas at most, including a token transfer and its callback. Attaching less gas
+// makes an agent key's allowance, which is charged for attached gas, last longer.
+const TGAS=1000000000000n,ONE_YOCTO=1n,GAS=60n*TGAS,REQUEST_GAS=40n*TGAS,UNIT=10n**20n;
 export const CODE=new URL('./contract/res/paygate_vault.wasm',import.meta.url);
 export const FACTORY_CODE=new URL('./contract/res/paygate_factory.wasm',import.meta.url);
 export const NETWORKS={
@@ -87,7 +89,7 @@ export function factoryClient({rpcUrl,network,factory,walletUrl}){
   provider,network,factory,walletUrl:wallet,
   config:()=>provider.callFunction({contractId:factory,method:'get_config',args:{},blockQuery:{finality:'optimistic'}}),
   exists:id=>provider.viewAccount({accountId:id,blockQuery:{finality:'optimistic'}}).then(()=>true,e=>/does not exist|UNKNOWN_ACCOUNT/i.test(String(e?.message||e))?false:Promise.reject(e)),
-  createLink:({owner,name,agentKey,limits,payees,fund,token,callbackUrl})=>walletLink({provider,walletUrl:wallet,signer:owner,receiver:factory,method:'create_vault',args:{name,agent_key:agentKey,limits,recipients:payees,...(token?{token}:{})},deposit:toYocto(fund),gas:200n*TGAS,callbackUrl}),
+  createLink:({owner,name,agentKey,limits,payees,fund,token,agentFund,callbackUrl})=>walletLink({provider,walletUrl:wallet,signer:owner,receiver:factory,method:'create_vault',args:{name,agent_key:agentKey,limits,recipients:payees,...(token?{token}:{}),...(agentFund?{agent_fund:toYocto(agentFund)}:{})},deposit:toYocto(fund),gas:200n*TGAS,callbackUrl}),
   // Without a transaction hash: the vault counts if the chain shows it owned by this customer, with this agent,
   // and the agent's only key is the one PayGate issued, limited to request_payment on that vault.
   async findCreated({owner,name,agentKey}){
@@ -132,7 +134,7 @@ export function vaultClient(config){
  // The agent key's restriction still applies: NEAR checks the method and receiver of the signed delegate action.
  async function relayed(method,args){
   const opt={finality:'optimistic'},ak=await provider.viewAccessKey({accountId:agent,publicKey:agentPair.getPublicKey().toString(),finalityQuery:opt}),block=await provider.viewBlock({finality:'final'});
-  const da=buildDelegateAction({actions:[actions.functionCall(method,args,GAS,0n)],maxBlockHeight:BigInt(block.header.height)+120n,nonce:BigInt(ak.nonce)+1n,publicKey:agentPair.getPublicKey(),receiverId:vault,senderId:agent});
+  const da=buildDelegateAction({actions:[actions.functionCall(method,args,REQUEST_GAS,0n)],maxBlockHeight:BigInt(block.header.height)+120n,nonce:BigInt(ak.nonce)+1n,publicKey:agentPair.getPublicKey(),receiverId:vault,senderId:agent});
   const r=await relayer.signAndSendTransaction({receiverId:agent,actions:[actions.signedDelegate((await agentSigner.signDelegateAction(da)).signedDelegate)]});
   // The relayer's transaction succeeds even when the call inside fails, so the vault's own receipt decides.
   const own=r.receipts_outcome.find(x=>x.outcome.executor_id===vault&&(x.outcome.status.SuccessValue!==undefined||x.outcome.status.Failure));
@@ -140,7 +142,7 @@ export function vaultClient(config){
   if(own.outcome.status.Failure)throw Error(JSON.stringify(own.outcome.status.Failure));
   return {...r,status:{SuccessValue:own.outcome.status.SuccessValue}};
  }
- const call=(method,args)=>relayer?relayed(method,args).catch(e=>/does not allow|panicked|Smart contract|already been paid|not on the allowlist|limit|frozen|Invalid job/i.test(reason(e))?Promise.reject(e):agentAccount.callFunctionRaw({contractId:vault,methodName:method,args,gas:GAS})):agentAccount.callFunctionRaw({contractId:vault,methodName:method,args,gas:GAS});
+ const call=(method,args)=>relayer?relayed(method,args).catch(e=>/does not allow|panicked|Smart contract|already been paid|not on the allowlist|limit|frozen|Invalid job/i.test(reason(e))?Promise.reject(e):agentAccount.callFunctionRaw({contractId:vault,methodName:method,args,gas:REQUEST_GAS})):agentAccount.callFunctionRaw({contractId:vault,methodName:method,args,gas:REQUEST_GAS});
  let queue=Promise.resolve();const serial=fn=>{const run=queue.then(fn);queue=run.catch(()=>{});return run};
  const view=(method,args={})=>provider.callFunction({contractId:vault,method,args,blockQuery:{finality:'optimistic'}}),dec=config.token?(config.decimals??6):24;
  return {

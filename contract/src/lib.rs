@@ -3,7 +3,8 @@
 //! rules below decide. Owner methods need one attached yoctoNEAR, which a
 //! function-call access key cannot send, so a leaked agent key cannot use them.
 use near_sdk::json_types::U128;
-use near_sdk::serde_json::json;
+use near_sdk::serde::Serialize;
+use near_sdk::serde_json;
 use near_sdk::store::{IterableMap, IterableSet, LookupSet};
 use near_sdk::{
     assert_one_yocto, env, near, require, AccountId, Gas, NearToken, PanicOnDefault, Promise,
@@ -73,6 +74,8 @@ pub enum Event {
     PaymentFailed { id: u64 },
     #[event_version("1.0.0")]
     FreezeChanged { frozen: bool },
+    #[event_version("1.0.0")]
+    VaultClosed { beneficiary: AccountId },
 }
 
 #[near(contract_state)]
@@ -92,6 +95,8 @@ pub struct Vault {
     token: Option<AccountId>,
     /// Token units the vault holds, credited only through `ft_on_transfer` from `token`.
     token_balance: u128,
+    /// Transfers whose callback has not run yet. The vault cannot be closed while any are in flight.
+    in_flight: u32,
 }
 
 #[near]
@@ -125,6 +130,7 @@ impl Vault {
             used_jobs: LookupSet::new(b"j"),
             token,
             token_balance: 0,
+            in_flight: 0,
         };
         for recipient in recipients.unwrap_or_default() {
             vault.recipients.insert(recipient);
@@ -267,6 +273,7 @@ impl Vault {
             None => Promise::new(self.owner.clone()).transfer(amount),
             Some(token) => {
                 self.token_balance -= amount.as_yoctonear();
+                self.in_flight += 1;
                 ft_transfer(token, self.owner.clone(), amount, "PayGate withdrawal".into()).then(
                     Self::ext(env::current_account_id()).with_static_gas(CALLBACK_GAS).on_withdraw(amount),
                 )
@@ -284,9 +291,22 @@ impl Vault {
         Promise::new(self.owner.clone()).transfer(amount)
     }
 
+    /// Deletes the vault and sends all of its NEAR to the owner, including what its code and state
+    /// lock for storage. Only once no payment is held, no transfer is in flight and no tokens are left.
+    #[payable]
+    pub fn close(&mut self) -> Promise {
+        self.assert_owner();
+        require!(self.pending.is_empty(), "Approve or reject held payments first");
+        require!(self.in_flight == 0, "A transfer is still in progress. Try again in a moment");
+        require!(self.token_balance == 0, "Withdraw the vault's tokens first");
+        Event::VaultClosed { beneficiary: self.owner.clone() }.emit();
+        Promise::new(env::current_account_id()).delete_account(self.owner.clone())
+    }
+
     /// Restores the token ledger if a token withdrawal failed.
     #[private]
     pub fn on_withdraw(&mut self, amount: NearToken, #[callback_result] result: Result<(), PromiseError>) {
+        self.in_flight = self.in_flight.saturating_sub(1);
         if result.is_err() {
             self.token_balance = self.token_balance.saturating_add(amount.as_yoctonear());
         }
@@ -301,6 +321,7 @@ impl Vault {
         window_start_ms: u64,
         #[callback_result] result: Result<(), PromiseError>,
     ) {
+        self.in_flight = self.in_flight.saturating_sub(1);
         if result.is_err() {
             if self.token.is_some() {
                 self.token_balance = self.token_balance.saturating_add(amount.as_yoctonear());
@@ -374,15 +395,16 @@ impl Vault {
         require!(spent <= self.limits.daily_limit, "Amount exceeds the daily limit");
         require!(amount <= self.available(), "Insufficient vault balance");
         self.spent_in_window = spent;
+        self.in_flight += 1;
         Event::PaymentSent { id, recipient: recipient.clone(), amount, job_id: job_id.clone() }.emit();
         let transfer = match self.token.clone() {
             None => Promise::new(recipient).transfer(amount),
             Some(token) => {
                 self.token_balance -= amount.as_yoctonear();
                 if register {
-                    let args = json!({ "account_id": recipient, "registration_only": true });
+                    let args = StorageDepositArgs { account_id: &recipient, registration_only: true };
                     Promise::new(token.clone())
-                        .function_call("storage_deposit", args.to_string().into_bytes(), TOKEN_STORAGE, STORAGE_DEPOSIT_GAS)
+                        .function_call("storage_deposit", to_json(&args), TOKEN_STORAGE, STORAGE_DEPOSIT_GAS)
                         .then(ft_transfer(token, recipient, amount, job_id.clone()))
                 } else {
                     ft_transfer(token, recipient, amount, job_id.clone())
@@ -397,10 +419,30 @@ impl Vault {
     }
 }
 
+// Typed call arguments: serializing these is far smaller in code than building serde_json values.
+#[derive(Serialize)]
+#[serde(crate = "near_sdk::serde")]
+struct FtTransferArgs<'a> {
+    receiver_id: &'a AccountId,
+    amount: U128,
+    memo: &'a str,
+}
+
+#[derive(Serialize)]
+#[serde(crate = "near_sdk::serde")]
+struct StorageDepositArgs<'a> {
+    account_id: &'a AccountId,
+    registration_only: bool,
+}
+
+fn to_json<T: Serialize>(args: &T) -> Vec<u8> {
+    serde_json::to_vec(args).unwrap_or_else(|_| env::panic_str("Could not encode call arguments"))
+}
+
 /// NEP-141 transfer of `amount` token units; the token requires exactly one yoctoNEAR.
 fn ft_transfer(token: AccountId, receiver_id: AccountId, amount: NearToken, memo: String) -> Promise {
-    let args = json!({ "receiver_id": receiver_id, "amount": U128(amount.as_yoctonear()), "memo": memo });
-    Promise::new(token).function_call("ft_transfer", args.to_string().into_bytes(), NearToken::from_yoctonear(1), FT_TRANSFER_GAS)
+    let args = FtTransferArgs { receiver_id: &receiver_id, amount: U128(amount.as_yoctonear()), memo: &memo };
+    Promise::new(token).function_call("ft_transfer", to_json(&args), NearToken::from_yoctonear(1), FT_TRANSFER_GAS)
 }
 
 fn assert_limits(limits: &Limits) {
@@ -788,6 +830,47 @@ mod tests {
         let mut v = vault();
         call("owner.near", 1);
         let _ = v.withdraw_near(NearToken::from_near(1));
+    }
+
+    #[test]
+    fn closing_waits_for_held_payments_transfers_and_tokens() {
+        let mut v = vault();
+        let held = v.request_payment(acct("worker.near"), near(3), "held".into());
+        call("owner.near", 1);
+        v.reject_payment(held.id);
+        call("agent.near", 0);
+        v.request_payment(acct("worker.near"), near(1), "sent".into());
+        assert_eq!(v.in_flight, 1, "a payment is in flight until its callback runs");
+        call("vault.near", 0);
+        v.on_payout(2, near(1), "sent".into(), v.window_start_ms, Ok(()));
+        assert_eq!(v.in_flight, 0);
+        call("owner.near", 1);
+        let _ = v.close();
+    }
+
+    #[test]
+    #[should_panic(expected = "Approve or reject held payments first")]
+    fn a_vault_with_held_payments_cannot_close() {
+        let mut v = vault();
+        v.request_payment(acct("worker.near"), near(3), "held".into());
+        call("owner.near", 1);
+        let _ = v.close();
+    }
+
+    #[test]
+    #[should_panic(expected = "Withdraw the vault's tokens first")]
+    fn a_token_vault_with_tokens_cannot_close() {
+        let mut v = token_vault();
+        call("owner.near", 1);
+        let _ = v.close();
+    }
+
+    #[test]
+    #[should_panic(expected = "Only the owner")]
+    fn the_agent_cannot_close_the_vault() {
+        let mut v = vault();
+        call("agent.near", 1);
+        let _ = v.close();
     }
 
     #[test]
