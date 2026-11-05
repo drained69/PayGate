@@ -5,8 +5,8 @@ const TGAS=1000000000000n,ONE_YOCTO=1n,GAS=60n*TGAS,UNIT=10n**20n;
 export const CODE=new URL('./contract/res/paygate_vault.wasm',import.meta.url);
 export const FACTORY_CODE=new URL('./contract/res/paygate_factory.wasm',import.meta.url);
 export const NETWORKS={
- mainnet:{rpcUrl:'https://free.rpc.fastnear.com',wallet:'https://app.mynearwallet.com',explorer:'https://nearblocks.io/txns/'},
- testnet:{rpcUrl:'https://test.rpc.fastnear.com',wallet:'https://testnet.mynearwallet.com',explorer:'https://testnet.nearblocks.io/txns/'}
+ mainnet:{rpcUrl:'https://free.rpc.fastnear.com',fallbackRpc:'https://rpc.mainnet.near.org',wallet:'https://app.mynearwallet.com',explorer:'https://nearblocks.io/txns/'},
+ testnet:{rpcUrl:'https://test.rpc.fastnear.com',fallbackRpc:'https://rpc.testnet.near.org',wallet:'https://testnet.mynearwallet.com',explorer:'https://testnet.nearblocks.io/txns/'}
 };
 // Several comma-separated RPC URLs fail over to each other, so one slow or rate-limited node does not stop payments.
 export function providerFor(rpcUrl){const urls=String(rpcUrl).split(',').map(u=>u.trim()).filter(Boolean);return urls.length>1?new FailoverRpcProvider(urls.map(url=>new JsonRpcProvider({url}))):new JsonRpcProvider({url:urls[0]})}
@@ -147,7 +147,7 @@ export function vaultClient(config){
   explorer:hash=>net.explorer&&hash?net.explorer+hash:null,
   token:config.token||null,decimals:dec,symbol:config.token?(config.symbol||'USDC'):'NEAR',
   units:n=>toUnits(n,dec),fromUnits:y=>fromUnits(y,dec),
-  async policy(){const p=await view('get_policy');return {...p,spendable:fromUnits(p.balance,dec),spent:fromUnits(p.spent_in_window,dec),limits:{auto:fromUnits(p.limits.auto_limit,dec),max:fromUnits(p.limits.max_payment,dec),daily:fromUnits(p.limits.daily_limit,dec)}}},
+  async policy(){const p=await view('get_policy');return {...p,spendable:fromUnits(p.balance,dec),nearBalance:p.near_balance?fromUnits(p.near_balance,24):null,spent:fromUnits(p.spent_in_window,dec),limits:{auto:fromUnits(p.limits.auto_limit,dec),max:fromUnits(p.limits.max_payment,dec),daily:fromUnits(p.limits.daily_limit,dec)}}},
   // Token vaults pay only accounts registered with the token contract; NEAR vaults need no registration.
   async registered(accounts){if(!config.token)return Object.fromEntries(accounts.map(a=>[a,true]));return Object.fromEntries(await Promise.all(accounts.map(async a=>[a,Boolean(await provider.callFunction({contractId:config.token,method:'storage_balance_of',args:{account_id:a},blockQuery:{finality:'optimistic'}}).catch(()=>null))])))},
   tokenLink(calls,callbackUrl){return walletLink({provider,walletUrl:this.walletUrl,signer:owner,receiver:config.token,calls,callbackUrl})},

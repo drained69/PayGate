@@ -49,7 +49,7 @@ npm run dev:chain</code></pre>
 <p class="eyebrow">Using PayGate</p><h1>Approving with your wallet</h1>
 <p class="lead">Your key never leaves your wallet. PayGate prepares each owner action, your connected wallet signs it, and PayGate checks the result on-chain.</p>
 <table><thead><tr><th>Action</th><th>Contract method</th></tr></thead><tbody>
-<tr><td>Approve a held payment</td><td><code>approve_payment</code></td></tr><tr><td>Reject a held payment</td><td><code>reject_payment</code></td></tr><tr><td>Freeze or unfreeze</td><td><code>set_frozen</code></td></tr><tr><td>Change limits</td><td><code>set_limits</code></td></tr><tr><td>Add or remove a payee</td><td><code>set_recipient</code></td></tr><tr><td>Withdraw to you</td><td><code>withdraw</code></td></tr>
+<tr><td>Approve a held payment</td><td><code>approve_payment</code></td></tr><tr><td>Reject a held payment</td><td><code>reject_payment</code></td></tr><tr><td>Freeze or unfreeze</td><td><code>set_frozen</code></td></tr><tr><td>Change limits</td><td><code>set_limits</code></td></tr><tr><td>Add or remove a payee</td><td><code>set_recipient</code></td></tr><tr><td>Withdraw to you</td><td><code>withdraw</code></td></tr><tr><td>Withdraw spare NEAR from a USDC vault</td><td><code>withdraw_near</code></td></tr><tr><td>Approve a cross-chain payout</td><td><code>pay_external</code></td></tr><tr><td>Replace the agent</td><td><code>set_agent</code></td></tr>
 </tbody></table>
 <p>Each call attaches one yoctoNEAR. A function-call key cannot attach a deposit, so even a stolen agent key could not call these methods.</p>
 <h2>Wallets</h2><p>PayGate connects wallets through NEAR Connect: Meteor, HOT, Intear, Nightly, Ledger, OKX and others. Sign in with the account that owns your vault; if your wallet is connected as a different account, PayGate asks you to switch.</p>
@@ -150,7 +150,7 @@ curl -X POST $BASE/jobs/PG-1a2b3c4d/pay -H "Authorization: Bearer $KEY"</code></
 <p class="eyebrow">Operate</p><h1>Run your own PayGate</h1>
 <p class="lead">For operators. Customers do not need any of this: they sign in and create a vault.</p>
 <h2>1. Deploy the platform</h2>
-<p>Run once from your own machine with an operator account. It publishes the vault code as a global contract pinned by hash, so every customer vault runs exactly that code, and deploys the factory, which ends with no keys. Publishing burns about 23.8 NEAR and the factory code locks about 1.8 NEAR, so fund it with 28 NEAR. Without the confirmation flag it only prints a summary.</p>
+<p>Run once from your own machine with an operator account. It publishes the vault code as a global contract pinned by hash, so every customer vault runs exactly that code, and deploys the factory, which ends with no keys. Publishing burns about 24 NEAR and the factory code locks about 1.8 NEAR, so fund it with 28 NEAR. Without the confirmation flag it only prints a summary.</p>
 <pre><code>NEAR_NETWORK=mainnet NEAR_OPERATOR_ACCOUNT=you.near NEAR_OPERATOR_KEY=ed25519:... \\
 npm run platform:deploy</code></pre>
 <p>Run it again with <code>-- --yes-mainnet</code> to deploy. It prints the <code>PAYGATE_FACTORY</code> value for your server.</p>
@@ -189,9 +189,14 @@ railway up --service paygate</code></pre>
 <tr><td>Wallet sign-in checked on-chain</td><td>PayGate</td><td>Signing in as someone else</td></tr>
 <tr><td>Approvals checked on-chain</td><td>PayGate</td><td>Forged callbacks recording payments that never happened</td></tr>
 <tr><td>Agent and AI keys encrypted (AES-256-GCM)</td><td>PayGate</td><td>A database leak exposing usable keys</td></tr>
+<tr><td>Cross-chain payouts only by the owner (<code>pay_external</code>)</td><td>Your vault</td><td>The agent or PayGate sending funds off NEAR</td></tr>
+<tr><td>USDC counted only from the USDC contract</td><td>Your vault</td><td>Fake or unrelated tokens inflating the balance</td></tr>
+<tr><td>Webhook addresses checked when connecting</td><td>PayGate</td><td>Alerts being pointed at private networks, including by DNS rebinding</td></tr>
+<tr><td>Agent API keys stored as hashes, scoped, revocable</td><td>PayGate</td><td>A leaked database revealing usable API keys; agents approving or withdrawing</td></tr>
 </tbody></table>
 <h2>Remaining risks</h2>
-<ul><li>Someone who takes over PayGate's server and its secret can use agent keys to spend up to each customer's automatic limit per payment and daily limit, only to that customer's payees. They cannot approve held payments, change rules or withdraw.</li><li>A hijacked agent can use its 50 daily requests or fill the queue of 20 held payments, which blocks payments until you reject them.</li><li>When the agent's 0.25 NEAR gas allowance runs out, it stops until a new agent is set.</li><li>The contracts have not had an independent audit. Start with small limits and a small balance.</li></ul>`},
+<ul><li>Someone who takes over PayGate's server and its secret can use agent keys to spend up to each customer's automatic limit per payment and daily limit, only to that customer's payees. They cannot approve held payments, change rules or withdraw.</li><li>A hijacked agent can use its 50 daily requests or fill the queue of 20 held payments, which blocks payments until you reject them.</li><li>When the agent's 0.25 NEAR gas allowance runs out, it stops until a new agent is set.</li><li>For a cross-chain payout, your wallet shows the NEAR Intents deposit address, not the destination address. You rely on PayGate's quote for where it ends up; check the deposit address on the NEAR Intents explorer before signing if the amount is large.</li><li>A USDC vault needs a little NEAR for storage. If it runs out, payments fail until you send NEAR to the vault; no funds are lost.</li><li>The contracts were reviewed in-house, with unit tests for every rule and an end-to-end attack demo, but have not had an independent audit. Start with small limits and a small balance.</li></ul>
+<h2>If PayGate is unavailable</h2><p>Your vault never depends on PayGate. Call it directly with NEAR CLI or any wallet that signs contract calls, attaching 1 yoctoNEAR: <code>set_frozen</code> to stop payments, <code>withdraw</code> (and <code>withdraw_near</code> for USDC vaults) to take funds back, <code>approve_payment</code> or <code>reject_payment</code> for held payments. <code>get_policy</code>, <code>get_pending</code> and <code>get_recipients</code> are free views.</p>`},
 {id:'troubleshooting',title:'Troubleshooting',html:`
 <p class="eyebrow">Help</p><h1>Troubleshooting</h1>
 <h3>The wallet does not open</h3><p>Allow pop-ups for PayGate, or choose another wallet in the list.</p>

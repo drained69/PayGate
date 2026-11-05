@@ -10,7 +10,7 @@ PayGate is a public, non-custodial service on NEAR. Anyone can sign in with thei
 
 [How it works](#how-it-works) · [Use PayGate](#using-paygate) · [Agent API](#agent-api-and-mcp) · [Run your own](#run-your-own-paygate) · [Security model](#security-model) · [Contracts](#contract-reference) · [HTTP API](#http-api)
 
-![Node.js 22.22+](https://img.shields.io/badge/node-%E2%89%A522.22-1b3158) ![NEAR](https://img.shields.io/badge/chain-NEAR-1b3158) ![Contract tests](https://img.shields.io/badge/contract%20tests-35%20passing-2f7d55) ![License: MIT](https://img.shields.io/badge/license-MIT-1b3158)
+![Node.js 22.22+](https://img.shields.io/badge/node-%E2%89%A522.22-1b3158) ![NEAR](https://img.shields.io/badge/chain-NEAR-1b3158) ![Contract tests](https://img.shields.io/badge/contract%20tests-39%20passing-2f7d55) ![License: MIT](https://img.shields.io/badge/license-MIT-1b3158)
 
 ![PayGate homepage](docs/images/home.jpg)
 
@@ -234,7 +234,7 @@ Run once, from your own machine, with an operator account. The operator key is u
 
 | Cost | Amount |
 | --- | --- |
-| Publishing the vault code as a global contract (burned) | about 23.8 NEAR |
+| Publishing the vault code as a global contract (burned) | about 24 NEAR |
 | Storing the factory code (locked) | about 1.8 NEAR |
 | Buffer left in the factory for refunds | about 2.5 NEAR |
 | **Recommended `FACTORY_FUND`** | **28 NEAR** |
@@ -276,6 +276,9 @@ npm run check:deployed -- https://your-domain.up.railway.app
 ```
 
 ### 3. Before you open to the public
+
+The full launch steps and the pre-mainnet review are in [docs/MAINNET.md](docs/MAINNET.md).
+
 
 - Have the Terms of use and Privacy notice in `public/legal.js` reviewed by a lawyer for your jurisdiction.
 - Get the contracts independently audited.
@@ -330,7 +333,9 @@ Platform deployment only: `NEAR_OPERATOR_ACCOUNT`, `NEAR_OPERATOR_KEY`, `FACTORY
 - **Fixed daily windows.** Spending at the end of one window and the start of the next can reach twice the daily limit in a short time.
 - **Agent quotas.** A hijacked agent can use its 50 daily requests or fill the queue of 20 held payments until the customer rejects them.
 - **Gas allowance.** Without a relayer, the agent's 0.25 NEAR allowance eventually runs out; the customer can name a new agent with `set_agent`. With a relayer, the relayer pays instead; someone with the server could spend the relayer's gas money, never customers' funds.
-- **No independent audit yet.**
+- **Cross-chain payouts.** The owner's wallet shows the NEAR Intents deposit address, not the destination address, so the owner relies on PayGate's quote.
+- **USDC vault storage.** A USDC vault needs a little NEAR for storage. If it runs out, payments fail until the owner sends NEAR to the vault; no funds are lost.
+- **No independent audit yet.** An in-house pre-mainnet review is recorded in [docs/MAINNET.md](docs/MAINNET.md).
 
 Full trust boundaries are in [REPRODUCIBILITY.md](REPRODUCIBILITY.md). A design for taking agent keys off the server with a TEE-attested Shade Agent worker, not yet built, is in [docs/shade-agent-design.md](docs/shade-agent-design.md).
 
@@ -350,6 +355,7 @@ Source: [contract/src/lib.rs](contract/src/lib.rs). Built: `contract/res/paygate
 | `set_frozen`, `set_limits`, `set_recipient`, `set_agent` | Owner, 1 yocto | Configuration |
 | `withdraw(amount)` | Owner, 1 yocto | Sends NEAR, or the vault's token, to the owner, even while frozen |
 | `pay_external(recipient, amount, job_id)` | Owner, 1 yocto | Token vaults: registers `recipient` with the token and pays it, within the limits. Used for NEAR Intents deposit addresses |
+| `withdraw_near(amount)` | Owner, 1 yocto | Token vaults: returns NEAR not needed for storage to the owner |
 | `get_policy()`, `get_pending()`, `get_recipients()` | View | State |
 
 Events (`paygate_vault`): `payment_sent`, `payment_pending`, `payment_rejected`, `payment_failed`, `freeze_changed`. Constants: 24-hour window, 20 held payments, 50 requests per window, job ids up to 64 characters.
@@ -391,7 +397,7 @@ POST requests need the header `X-PayGate: 1`. Account endpoints need a session.
 | Command | What it checks | Needs |
 | --- | --- | --- |
 | `npm test` | 21 tests: job rules, workspace caps, NEAR services, encryption, NEP-413, server security, rate limits, startup refusals, file store | Nothing |
-| `cd contract && cargo test` | 30 vault tests, including USDC deposits, payments, refunds, withdrawals and owner-signed external payouts | Rust 1.97.1 |
+| `cd contract && cargo test` | 34 vault tests, including USDC deposits, payments, refunds, withdrawals, owner-signed external payouts and spare-NEAR withdrawals | Rust 1.97.1 |
 | `cd contract/factory && cargo test` | 5 factory tests | Rust 1.97.1 |
 | `npm run test:postgres` | Schema, row-locked concurrent updates, rollback, sessions, nonces, deletion, server start | Docker or `DATABASE_URL` |
 | `npm run demo:attack` | 12 attacks against a real local node | NEAR sandbox |

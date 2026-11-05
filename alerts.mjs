@@ -1,4 +1,7 @@
 import {lookup} from 'node:dns/promises';
+import dns from 'node:dns';
+import https from 'node:https';
+import http from 'node:http';
 import {createHmac} from 'node:crypto';
 import net from 'node:net';
 // Alerts to a customer's webhook (Slack, Discord or any https endpoint) and to Telegram.
@@ -29,11 +32,20 @@ function bodyFor(url,event,text,data){
  if(/(^|\.)discord(app)?\.com$/.test(host))return {content:text};
  return {event,text,data,sentAt:new Date().toISOString()};
 }
+// The address is checked again at connection time, on the IP actually used, so a DNS answer that changes
+// between the check and the request (DNS rebinding) cannot reach a private address. Redirects are not followed.
+export const safeLookup=(host,options,done)=>dns.lookup(host,{...options,all:true},(err,list)=>{
+ if(err)return done(err);
+ if(!list.length||list.some(a=>privateAddress(a.address)))return done(Error('Webhooks must point to a public internet address.'));
+ return options.all?done(null,list):done(null,list[0].address,list[0].family);
+});
 export async function sendWebhook({url,secret,event,text,data,allowPrivate=false}){
- await checkWebhook(url,{allowPrivate});
- const body=JSON.stringify(bodyFor(url,event,text,data));
- const r=await fetch(url,{method:'POST',redirect:'manual',signal:AbortSignal.timeout(8000),headers:{'Content-Type':'application/json','User-Agent':'PayGate-Alerts/1.0','X-PayGate-Event':event,'X-PayGate-Signature':'sha256='+createHmac('sha256',secret).update(body).digest('hex')},body});
- if(r.status<200||r.status>=300)throw Error(`The webhook answered ${r.status}.`);
+ const target=new URL(await checkWebhook(url,{allowPrivate})),body=JSON.stringify(bodyFor(url,event,text,data));
+ const status=await new Promise((done,fail)=>{
+  const r=(target.protocol==='https:'?https:http).request(target,{method:'POST',timeout:8000,...(allowPrivate?{}:{lookup:safeLookup}),headers:{'Content-Type':'application/json','Content-Length':Buffer.byteLength(body),'User-Agent':'PayGate-Alerts/1.0','X-PayGate-Event':event,'X-PayGate-Signature':'sha256='+createHmac('sha256',secret).update(body).digest('hex')}},res=>{res.resume();done(res.statusCode)});
+  r.on('timeout',()=>r.destroy(Error('The webhook did not answer in time.')));r.on('error',fail);r.end(body);
+ });
+ if(status<200||status>=300)throw Error(`The webhook answered ${status}.`);
 }
 export function telegram(token,{base='https://api.telegram.org'}={}){
  const call=async(method,params)=>{const r=await fetch(`${base}/bot${token}/${method}`,{method:'POST',signal:AbortSignal.timeout(10000),headers:{'Content-Type':'application/json'},body:JSON.stringify(params||{})});const d=await r.json().catch(()=>({}));if(!d.ok)throw Error('Telegram: '+(d.description||r.status));return d.result};

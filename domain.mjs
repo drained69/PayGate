@@ -44,7 +44,7 @@ export function transition(current,c){
   else if(c.action==='quote'){if(j.status!=='Review')throw Error('Job must be awaiting review.');j.quote=c.quote}
   else if(c.action==='cancel'){if(!['Working','Review'].includes(j.status))throw Error('Only jobs that are in progress or in review can be cancelled.');j.status='Cancelled'}
   else if(c.action==='requested'){if(j.status!=='Review')throw Error('Job must be awaiting review.');j.status='Awaiting approval';j.payment=c.payment}
-  else if(c.action==='bridge-quote'){if(j.status!=='Awaiting approval'||!j.payment?.external)throw Error('Job is not awaiting a cross-chain approval.');j.payment.bridge=c.bridge}
+  else if(c.action==='bridge-quote'){if(j.status!=='Awaiting approval'||!j.payment?.external)throw Error('Job is not awaiting a cross-chain approval.');j.payment.bridge=c.bridge;j.payment.quotes=[c.bridge,...(j.payment.quotes||[])].slice(0,5)}
   else if(c.action==='released'){if(j.status!=='Awaiting approval')throw Error('Job is not awaiting approval.');j.status='Review';delete j.payment}
   else if(c.action==='paid'){
    if(!['Review','Awaiting approval'].includes(j.status))throw Error('Job must be awaiting review.');

@@ -57,6 +57,8 @@ pub struct Policy {
     pub balance: NearToken,
     /// The NEP-141 token the vault pays in, or none for NEAR.
     pub token: Option<AccountId>,
+    /// NEAR not locked for storage. For a token vault it pays for storage and payout registrations.
+    pub near_balance: NearToken,
 }
 
 #[near(event_json(standard = "paygate_vault"))]
@@ -272,6 +274,16 @@ impl Vault {
         }
     }
 
+    /// Token vaults also hold a little NEAR for storage and for registering payout addresses.
+    /// The owner can take back any of it not locked for storage.
+    #[payable]
+    pub fn withdraw_near(&mut self, amount: NearToken) -> Promise {
+        self.assert_owner();
+        require!(self.token.is_some(), "Use withdraw for a NEAR vault");
+        require!(amount <= self.free_near(), "Insufficient NEAR above the vault's storage");
+        Promise::new(self.owner.clone()).transfer(amount)
+    }
+
     /// Restores the token ledger if a token withdrawal failed.
     #[private]
     pub fn on_withdraw(&mut self, amount: NearToken, #[callback_result] result: Result<(), PromiseError>) {
@@ -312,6 +324,7 @@ impl Vault {
             window_ends_ms: self.window_start_ms + WINDOW_MS,
             balance: self.available(),
             token: self.token.clone(),
+            near_balance: self.free_near(),
         }
     }
 
@@ -743,6 +756,38 @@ mod tests {
         let mut v = vault();
         call("owner.near", 1);
         v.pay_external(acct("anyone.near"), near(1), "x".into());
+    }
+
+    #[test]
+    fn token_vaults_return_spare_near_to_the_owner() {
+        let mut v = token_vault();
+        call("owner.near", 1);
+        assert!(v.get_policy().near_balance > NearToken::from_near(90));
+        let _ = v.withdraw_near(NearToken::from_near(1));
+    }
+
+    #[test]
+    #[should_panic(expected = "Only the owner")]
+    fn only_the_owner_withdraws_near() {
+        let mut v = token_vault();
+        call("agent.near", 1);
+        let _ = v.withdraw_near(NearToken::from_near(1));
+    }
+
+    #[test]
+    #[should_panic(expected = "Insufficient NEAR above the vault's storage")]
+    fn token_vaults_keep_their_storage_near() {
+        let mut v = token_vault();
+        call("owner.near", 1);
+        let _ = v.withdraw_near(NearToken::from_near(101));
+    }
+
+    #[test]
+    #[should_panic(expected = "Use withdraw for a NEAR vault")]
+    fn near_vaults_use_withdraw() {
+        let mut v = vault();
+        call("owner.near", 1);
+        let _ = v.withdraw_near(NearToken::from_near(1));
     }
 
     #[test]

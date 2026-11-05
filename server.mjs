@@ -17,7 +17,8 @@ const origins=[`http://localhost:${port}`,`http://127.0.0.1:${port}`,...(hosted?
 const network=env.NEAR_NETWORK||'testnet';
 if(!['mainnet','testnet','sandbox'].includes(network))fail('Set NEAR_NETWORK to mainnet, testnet or sandbox.');
 if(network==='sandbox'&&!env.NEAR_RPC_URL)fail('A local node needs NEAR_RPC_URL.');
-const rpcUrl=env.NEAR_RPC_URL||NETWORKS[network].rpcUrl,factoryId=env.PAYGATE_FACTORY||'';
+// Without NEAR_RPC_URL, the free FastNEAR endpoint is used with NEAR's public RPC as a failover.
+const rpcUrl=env.NEAR_RPC_URL||`${NETWORKS[network].rpcUrl},${NETWORKS[network].fallbackRpc}`,factoryId=env.PAYGATE_FACTORY||'';
 if(factoryId&&!isAccountId(factoryId))fail('PAYGATE_FACTORY is not a valid account.');
 // A local node has no wallet, so the server offers a stand-in wallet for its test accounts, and only there.
 if(env.PAYGATE_DEV_ACCOUNTS&&network!=='sandbox')fail('Remove PAYGATE_DEV_ACCOUNTS. Test accounts are only allowed on a local node.');
@@ -51,7 +52,9 @@ if(usdc&&!isAccountId(usdc))fail('PAYGATE_USDC is not a valid account.');
 // Only factories built with token support can create USDC vaults; older ones would silently create NEAR vaults.
 let factoryTokens=false,factoryExternal=false;
 const provider=(factory||factoryClient({rpcUrl,network,factory:'none',walletUrl})).provider;
-if(factory)factory.config().then(c=>{factoryTokens=c?.tokens===true;factoryExternal=c?.external_payouts===true}).catch(()=>{});
+// Read at start and every few minutes, so a slow or failed first read never leaves features off until a restart.
+const readFactory=()=>factory?.config().then(c=>{factoryTokens=c?.tokens===true;factoryExternal=c?.external_payouts===true}).catch(()=>{});
+readFactory();if(factory)setInterval(readFactory,3e5).unref();
 // Cross-chain payouts go through NEAR Intents 1Click, which works on mainnet only. PAYGATE_CROSSCHAIN=on or off overrides that.
 if(env.PAYGATE_CROSSCHAIN&&!['on','off'].includes(env.PAYGATE_CROSSCHAIN))fail('PAYGATE_CROSSCHAIN must be on or off.');
 const crossChainWanted=env.PAYGATE_CROSSCHAIN?env.PAYGATE_CROSSCHAIN==='on':network==='mainnet';
@@ -80,7 +83,7 @@ function vaultFor(account,profile){
 const need=v=>{if(!v)throw Error('Create your vault first.');return v};
 async function vaultView(v){
  const [p,recipients,pending]=await Promise.all([v.policy(),v.recipients(),v.pending()]);
- return {configured:true,network,vault:v.vault,owner:v.owner,agent:p.agent,frozen:p.frozen,spendable:p.spendable,spent:p.spent,windowEndsMs:p.window_ends_ms,limits:p.limits,recipients,currency:v.symbol,token:v.token,registered:await v.registered(recipients),pending:pending.map(x=>({...x,amount:v.fromUnits(x.amount)}))};
+ return {configured:true,network,vault:v.vault,owner:v.owner,agent:p.agent,frozen:p.frozen,spendable:p.spendable,spent:p.spent,nearBalance:p.nearBalance,windowEndsMs:p.window_ends_ms,limits:p.limits,recipients,currency:v.symbol,token:v.token,registered:await v.registered(recipients),pending:pending.map(x=>({...x,amount:v.fromUnits(x.amount)}))};
 }
 const amount=(n,label,decimals=24)=>{if(typeof n!=='number'||!Number.isFinite(n)||n<0.0001||n>1e9)throw Error(`Enter ${label} from 0.0001.`);return toUnits(n,decimals)};
 const validName=n=>typeof n==='string'&&n.length>=2&&n.length<=32&&/^[a-z0-9](?:[a-z0-9]|-(?!-))*[a-z0-9]$/.test(n)&&!n.endsWith('-agent');
@@ -158,13 +161,16 @@ async function act(c,account,req){
  if(c.action==='confirm'){
   need(v);if(j?.status!=='Awaiting approval')throw Error('This job is not waiting for approval.');
   if(j.payment.external){
-   const b=j.payment.bridge;if(!b)throw Error('Approve the payment first.');
-   const {outcome}=await v.confirmOwner(c.txHash,['pay_external'],a=>a?.job_id===key&&a?.recipient===b.depositAddress&&a?.amount===j.payment.amountUnits);
+   // Every quote issued for this job is accepted, so a wallet that signs an earlier approval is still recorded.
+   const quotes=j.payment.quotes||(j.payment.bridge?[j.payment.bridge]:[]);if(!quotes.length)throw Error('Approve the payment first.');
+   const {outcome,args}=await v.confirmOwner(c.txHash,['pay_external'],a=>a?.job_id===key&&a?.amount===j.payment.amountUnits&&quotes.some(q=>q.depositAddress===a?.recipient));
+   const b=quotes.find(q=>q.depositAddress===args.recipient);
    const id=v.sentId(outcome,key);
    if(id==null||v.found(outcome,'payment_failed',id))throw Error('The payout did not reach NEAR Intents and the funds returned to the vault. Approve it again for a new quote.');
    crossChainSubmit(c.txHash,b.depositAddress);
    alert(account,'payment.paid',`PayGate: sent ${j.amount} ${v.symbol} to ${j.payment.external.name} ${j.payment.external.address} for "${j.title}" through NEAR Intents.`,{jobId:j.id,amount:j.amount,payee:j.payee,txHash:c.txHash});
-   return commit({action:'paid',id:j.id,settlement:{...j.payment,paymentId:id,route:'cross-chain',txHash:c.txHash,explorer:v.explorer(c.txHash)}});
+   const {quotes:_,...payment}=j.payment;
+   return commit({action:'paid',id:j.id,settlement:{...payment,bridge:b,paymentId:id,route:'cross-chain',txHash:c.txHash,explorer:v.explorer(c.txHash)}});
   }
   const {outcome,method}=await v.confirmOwner(c.txHash,['approve_payment','reject_payment'],a=>a?.id===j.payment.paymentId);
   if(method==='reject_payment')return commit({action:'released',id:j.id});
@@ -186,6 +192,7 @@ async function act(c,account,req){
   if(c.kind==='payee'){if(!isAccountId(c.account))throw Error('Enter a valid NEAR account, such as name.near.');if(typeof c.allowed!=='boolean')throw Error('Invalid payee change.');return link('set_recipient',{recipient:c.account,allowed:c.allowed})}
   if(c.kind==='limits'){const l={auto_limit:amount(c.auto,'limits',v.decimals),max_payment:amount(c.max,'limits',v.decimals),daily_limit:amount(c.daily,'limits',v.decimals)};if(!(c.auto<=c.max&&c.max<=c.daily))throw Error('Limits must satisfy automatic ≤ maximum payment ≤ daily.');return link('set_limits',{limits:l})}
   if(c.kind==='withdraw')return link('withdraw',{amount:amount(c.amount,'an amount',v.decimals)});
+  if(c.kind==='withdraw-near'){if(!v.token)throw Error('Use the withdrawal form for a NEAR vault.');if((await v.policy()).nearBalance==null)throw Error('This vault was created before NEAR withdrawals existed.');return link('withdraw_near',{amount:amount(c.amount,'an amount',24)})}
   // USDC deposits register the vault with the token and send the USDC in one wallet transaction.
   if(c.kind==='deposit'){if(!v.token)throw Error('Send NEAR to the vault account from any wallet.');return v.tokenLink([{method:'storage_deposit',args:{account_id:v.vault,registration_only:true},deposit:TOKEN_STORAGE},{method:'ft_transfer_call',args:{receiver_id:v.vault,amount:amount(c.amount,'an amount',v.decimals),msg:''},deposit:'1',gas:100000000000000n}],callbackFor(req))}
   if(c.kind==='register'){if(!v.token)throw Error('NEAR vaults need no registration.');if(!isAccountId(c.account))throw Error('Invalid account.');return v.tokenLink([{method:'storage_deposit',args:{account_id:c.account,registration_only:true},deposit:TOKEN_STORAGE}],callbackFor(req))}
@@ -314,13 +321,13 @@ async function agentCall(account,key,name,a={}){
  throw Object.assign(Error('Unknown tool.'),{status:404});
 }
 const TOOLS=[
- {name:'get_vault',description:'Read the vault: spendable balance in NEAR, limits (automatic, per payment, daily), today\'s spending, whether it is frozen, its payees and the budget already committed to open jobs.',inputSchema:{type:'object',properties:{}}},
+ {name:'get_vault',description:'Read the vault: currency (NEAR or USDC), spendable balance, limits (automatic, per payment, daily), today\'s spending, whether it is frozen, its payees and the budget already committed to open jobs.',inputSchema:{type:'object',properties:{}}},
  {name:'list_payees',description:'List the accounts the vault may pay, with their labels. Payments to any other account are refused by the vault. Entries marked crossChain are addresses on other chains, written chain:address; their payments always wait for the owner to approve them.',inputSchema:{type:'object',properties:{}}},
  {name:'list_jobs',description:'List jobs, newest first. Optionally filter by status: Working, Review, Awaiting approval, Paid or Cancelled.',inputSchema:{type:'object',properties:{status:{type:'string',enum:['Working','Review','Awaiting approval','Paid','Cancelled']}}}},
  {name:'get_job',description:'Get one job, its delivery, and its payment or receipt.',inputSchema:{type:'object',properties:{id:{type:'string'}},required:['id']}},
- {name:'create_job',description:'Create a job for an allowlisted payee with a budget in NEAR (at most 4 decimals). The budget must fit the per-payment limit and the balance not committed to other open jobs.',inputSchema:{type:'object',properties:{title:{type:'string',maxLength:100},brief:{type:'string',maxLength:2000},payee:{type:'string',description:'NEAR account on the allowlist'},amount:{type:'number',minimum:0.0001}},required:['title','brief','payee','amount']}},
+ {name:'create_job',description:'Create a job for an allowlisted payee with a budget in the vault currency, NEAR or USDC (at most 4 decimals). The budget must fit the per-payment limit and the balance not committed to other open jobs.',inputSchema:{type:'object',properties:{title:{type:'string',maxLength:100},brief:{type:'string',maxLength:2000},payee:{type:'string',description:'A payee from list_payees: a NEAR account, or chain:address for a cross-chain payee'},amount:{type:'number',minimum:0.0001}},required:['title','brief','payee','amount']}},
  {name:'deliver_job',description:'Record what was delivered for a job in progress (a summary, a link, an invoice number). The job then waits for payment review.',inputSchema:{type:'object',properties:{id:{type:'string'},text:{type:'string',maxLength:8000}},required:['id','text']}},
- {name:'request_payment',description:'Ask the vault to pay a delivered job. At or below the automatic limit it is paid at once and returns a receipt with the NEAR transaction. Above it, the vault holds the payment and the owner approves or rejects it in their wallet; check back with get_job.',inputSchema:{type:'object',properties:{id:{type:'string'}},required:['id']}},
+ {name:'request_payment',description:'Ask the vault to pay a delivered job. At or below the automatic limit it is paid at once and returns a receipt with the NEAR transaction. Payees on other chains always wait for the owner. Above it, the vault holds the payment and the owner approves or rejects it in their wallet; check back with get_job.',inputSchema:{type:'object',properties:{id:{type:'string'}},required:['id']}},
  {name:'cancel_job',description:'Cancel a job that is in progress or in review and release its budget.',inputSchema:{type:'object',properties:{id:{type:'string'}},required:['id']}}
 ];
 async function agentApi(url,req,res,json,body,ip){
@@ -336,7 +343,7 @@ async function agentApi(url,req,res,json,body,ip){
   let m;try{m=await body()}catch{return json(400,{jsonrpc:'2.0',id:null,error:{code:-32700,message:'Parse error'}})}
   const reply=result=>json(200,{jsonrpc:'2.0',id:m.id??null,result}),error=(code,message)=>json(200,{jsonrpc:'2.0',id:m.id??null,error:{code,message}});
   if(m.id===undefined){res.writeHead(202);return res.end()}
-  if(m.method==='initialize')return reply({protocolVersion:m.params?.protocolVersion||'2025-06-18',capabilities:{tools:{listChanged:false}},serverInfo:{name:'paygate',title:'PayGate',version:'1.0.0'},instructions:`PayGate lets you spend from ${account}'s NEAR vault within limits enforced on-chain. Create a job for an allowlisted payee, deliver the work, then request payment. Small payments go out at once; larger ones wait for the owner's wallet approval. You cannot change limits, payees or approvals.`});
+  if(m.method==='initialize')return reply({protocolVersion:m.params?.protocolVersion||'2025-06-18',capabilities:{tools:{listChanged:false}},serverInfo:{name:'paygate',title:'PayGate',version:'1.0.0'},instructions:`PayGate lets you spend from ${account}'s NEAR vault (NEAR or USDC) within limits enforced on-chain. Create a job for an allowlisted payee, deliver the work, then request payment. Small payments go out at once; larger ones wait for the owner's wallet approval. You cannot change limits, payees or approvals.`});
   if(m.method==='ping')return reply({});
   if(m.method==='tools/list')return reply({tools:TOOLS.filter(t=>t.name!=='request_payment'||key.pay)});
   if(m.method==='tools/call'){try{const out=await agentCall(account,key,m.params?.name,m.params?.arguments||{});return reply({content:[{type:'text',text:JSON.stringify(out,null,2)}],structuredContent:Array.isArray(out)?{items:out}:out,isError:false})}catch(e){return reply({content:[{type:'text',text:reason(e)}],isError:true})}}

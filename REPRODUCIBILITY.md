@@ -34,14 +34,14 @@ Requires Node.js 22.22.2 or later. Run `npm install`, then `npm run dev:chain`, 
 
 ## Rebuilding the contracts
 
-`contract/res/paygate_vault.wasm` and `contract/res/paygate_factory.wasm` are committed, so no Rust toolchain is needed. To rebuild them, run `cargo build --release --target wasm32-unknown-unknown` in `contract/` and in `contract/factory/`, and copy each output to `contract/res/`. The build needs the `--cfg near` flag in `contract/.cargo/config.toml`, because `near-sdk` otherwise drops every contract panic message. The contracts need nearcore 2.14 or later, so the sandbox is pinned to 2.14.0. Publishing the vault code as a global contract burns ten times the normal storage cost, about 23.8 NEAR. `scripts/fixtures/test-usdc.wasm` is a test-only USDC built from `contract/test-token` for local nodes.
+`contract/res/paygate_vault.wasm` and `contract/res/paygate_factory.wasm` are committed, so no Rust toolchain is needed. To rebuild them, run `cargo build --release --target wasm32-unknown-unknown` in `contract/` and in `contract/factory/`, and copy each output to `contract/res/`. The build needs the `--cfg near` flag in `contract/.cargo/config.toml`, because `near-sdk` otherwise drops every contract panic message. The contracts need nearcore 2.14 or later, so the sandbox is pinned to 2.14.0. Publishing the vault code as a global contract burns ten times the normal storage cost, about 24 NEAR. `scripts/fixtures/test-usdc.wasm` is a test-only USDC built from `contract/test-token` for local nodes.
 
 ## Verification
 
 | Command | Covers |
 | --- | --- |
 | `npm test` | Domain, NEAR services, encryption, NEP-413, server security and the file store, offline |
-| `cd contract && cargo test` | 30 vault tests, including USDC and external payouts |
+| `cd contract && cargo test` | 34 vault tests, including USDC, external payouts and NEAR withdrawals |
 | `cd contract/factory && cargo test` | 5 factory tests |
 | `npm run test:postgres` | The store against real Postgres, in Docker or at `DATABASE_URL` |
 | `npm run test:browser` | The public site and the sign-in hand-off |
