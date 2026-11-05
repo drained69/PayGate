@@ -70,4 +70,5 @@ test('the file store applies concurrent updates in order and deletes cleanly',as
  await store.addSession('h','a.near',Date.now()+1e4);assert.equal(await store.session('h'),'a.near');
  await store.addNonce('n',Date.now()+1e4);assert.equal(await store.useNonce('n'),true);assert.equal(await store.useNonce('n'),false);
  await store.remove('a.near');assert.equal(await store.get('a.near'),null);assert.equal(await store.session('h'),null);
+ await store.update('mainnet/b.near',r=>r);assert.equal((await store.get('mainnet/b.near')).account,'mainnet/b.near');assert.equal(await store.get('b.near'),null,'network-scoped keys stay separate');
 });

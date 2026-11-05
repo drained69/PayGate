@@ -1,6 +1,8 @@
 <div align="center">
 
-# ◒ PayGate
+<img src="public/logo.svg" width="72" height="72" alt="PayGate logo">
+
+# PayGate
 
 **Give your AI agent a budget it can't overspend.**
 

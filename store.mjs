@@ -40,12 +40,13 @@ async function postgres(url){
 }
 async function files(dir){
  const base=new URL('accounts/',dir);await mkdir(base,{recursive:true,mode:0o700});
- const path=a=>new URL(encodeURIComponent(a)+'.json',base),queues=new Map(),sessions=new Map(),nonces=new Map();
+ // NEAR account names never contain '~', so it stands in for the '/' of network-scoped keys in file names.
+ const file=a=>encodeURIComponent(a.replaceAll('/','~')),path=a=>new URL(file(a)+'.json',base),queues=new Map(),sessions=new Map(),nonces=new Map();
  const get=async a=>{try{return JSON.parse(await readFile(path(a),'utf8'))}catch(e){if(e.code==='ENOENT')return null;throw e}};
  return {
   kind:'files',get,
   update(account,fn){
-   const run=(queues.get(account)||Promise.resolve()).then(async()=>{const next=await fn((await get(account))||fresh(account)),tmp=new URL(encodeURIComponent(account)+'.tmp',base);await writeFile(tmp,JSON.stringify(next,null,2),{mode:0o600});await rename(tmp,path(account));return next});
+   const run=(queues.get(account)||Promise.resolve()).then(async()=>{const next=await fn((await get(account))||fresh(account)),tmp=new URL(file(account)+'.tmp',base);await writeFile(tmp,JSON.stringify(next,null,2),{mode:0o600});await rename(tmp,path(account));return next});
    queues.set(account,run.catch(()=>{}));return run;
   },
   async remove(account){await rm(path(account),{force:true});for(const [h,s] of sessions)if(s.account===account)sessions.delete(h)},

@@ -15,7 +15,7 @@ try{
  await Promise.all(Array.from({length:20},()=>store.update('a.near',async r=>{await new Promise(d=>setTimeout(d,5));return {...r,profile:{...r.profile,n:(r.profile.n||0)+1}}})));
  assert.equal((await store.get('a.near')).profile.n,20);
  await assert.rejects(store.update('a.near',()=>{throw Error('boom')}),/boom/);assert.equal((await store.get('a.near')).profile.n,20,'a failed update must roll back');
- await store.addSession('h1','a.near',Date.now()+6e4);await store.addSession('h2','a.near',Date.now()-1);
+ await store.addSession('h1','a.near',Date.now()+6e4);await store.addSession('h2','a.near',Date.now()-36e5);
  assert.equal(await store.session('h1'),'a.near');assert.equal(await store.session('h2'),null,'expired sessions do not count');
  await store.addNonce('n1',Date.now()+6e4);assert.equal(await store.useNonce('n1'),true);assert.equal(await store.useNonce('n1'),false);
  await store.purge();assert.equal((await store.stats()).accounts,1);

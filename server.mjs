@@ -30,7 +30,12 @@ let secret=env.PAYGATE_SECRET;
 if(!secret&&hosted)fail('Set PAYGATE_SECRET to a random value of at least 32 characters. It encrypts customer keys.');
 if(!secret){const f=new URL('secret.key',dir);secret=await readFile(f,'utf8').catch(async()=>{const s=randomBytes(32).toString('hex');await writeFile(f,s,{mode:0o600});return s})}
 let box;try{box=sealer(secret)}catch(e){fail(e.message)}
-const store=await openStore({databaseUrl:env.DATABASE_URL,dir}).catch(e=>fail('Cannot open the database: '+e.message));
+const raw=await openStore({databaseUrl:env.DATABASE_URL,dir}).catch(e=>fail('Cannot open the database: '+e.message));
+// Each network keeps its own customers: a testnet vault must never appear on mainnet, and implicit accounts share names
+// across networks. Testnet keys stay unprefixed so the existing testnet beta keeps its data.
+const scope=a=>network==='testnet'?a:`${network}/${a}`,mine=k=>network==='testnet'?!k.includes('/'):k.startsWith(network+'/');
+const store={...raw,get:a=>raw.get(scope(a)),update:(a,fn)=>raw.update(scope(a),fn),remove:a=>raw.remove(scope(a)),addSession:(h,a,e)=>raw.addSession(h,scope(a),e),
+ async session(h){const k=await raw.session(h);return k&&mine(k)?k.slice(network==='testnet'?0:network.length+1):null}};
 setInterval(()=>store.purge().catch(()=>{}),6e5).unref();
 const factory=factoryId?factoryClient({rpcUrl,network,factory:factoryId,walletUrl}):null;
 const provider=(factory||factoryClient({rpcUrl,network,factory:'none',walletUrl})).provider;
@@ -173,7 +178,7 @@ async function devWallet(url,req,res){
  }
  return false;
 }
-const routes={'/':'index.html','/app.js':'app.js','/docs.js':'docs.js','/legal.js':'legal.js','/vendor/near-connect.js':'vendor/near-connect.js','/style.css':'style.css','/wallet-callback.html':'wallet-callback.html','/callback.js':'callback.js'},types={html:'text/html',js:'text/javascript',css:'text/css'};
+const routes={'/':'index.html','/app.js':'app.js','/docs.js':'docs.js','/legal.js':'legal.js','/vendor/near-connect.js':'vendor/near-connect.js','/logo.svg':'logo.svg','/style.css':'style.css','/wallet-callback.html':'wallet-callback.html','/callback.js':'callback.js'},types={html:'text/html',js:'text/javascript',css:'text/css',svg:'image/svg+xml'};
 http.createServer(async(req,res)=>{
 const json=(status,data,headers={})=>{res.writeHead(status,{'Content-Type':'application/json','Cache-Control':'no-store',...headers});res.end(JSON.stringify(data))};
 // Wallets connected through NEAR Connect run in sandboxed iframes that inherit this policy. Their inline code

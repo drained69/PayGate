@@ -54,7 +54,9 @@ export function signNep413(secretKey,payload){return Buffer.from(KeyPair.fromStr
 export async function verifySignIn(provider,{accountId,publicKey,signature,message,nonce,recipient,callbackUrl}){
  if(!isAccountId(accountId))throw Error('Invalid account.');
  let key;try{key=PublicKey.fromString(publicKey)}catch{throw Error('Invalid public key.')}
- const sig=Buffer.from(String(signature||''),'base64');
+ // NEP-413 signatures are base64; some wallets return base58, with or without an "ed25519:" prefix.
+ const text=String(signature||'').replace(/^ed25519:/,'');let sig=Buffer.from(text,'base64');
+ if(sig.length!==64)try{sig=Buffer.from(baseDecode(text))}catch{}
  // Wallets differ on whether the callback URL is part of the signed payload, so both forms are accepted. Both bind the same nonce and recipient.
  if(sig.length!==64||![callbackUrl,null].some(cb=>key.verify(nep413Hash({message,nonce,recipient,callbackUrl:cb}),sig)))throw Error('The signature does not match.');
  let access;try{access=await provider.viewAccessKey({accountId,publicKey,finalityQuery:{finality:'final'}})}catch{throw Error('That key does not belong to '+accountId+'.')}

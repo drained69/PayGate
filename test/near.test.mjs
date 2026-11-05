@@ -2,8 +2,8 @@ import {test,before,after} from 'node:test';
 import assert from 'node:assert/strict';
 import {usdValue,attestation,deliver,checkReport,integrations} from '../near.mjs';
 import {startStub,report} from '../scripts/near-stub.mjs';
-import {toYocto,toNear,isAccountId,nep413Hash,signNep413} from '../chain.mjs';
-import {KeyPair} from 'near-api-js';
+import {toYocto,toNear,isAccountId,nep413Hash,signNep413,verifySignIn} from '../chain.mjs';
+import {KeyPair,baseEncode} from 'near-api-js';
 import {sealer} from '../secrets.mjs';
 let stub;const nonce='cd'.repeat(32);
 before(async()=>{stub=await startStub();process.env.NEAR_AI_URL=stub.url;process.env.ONECLICK_URL=stub.url;});
@@ -24,3 +24,11 @@ test('sealed secrets round-trip and resist tampering and wrong keys',()=>{const 
 const raw=Buffer.from(sealed.slice(3),'base64');raw[raw.length-1]^=1;assert.throws(()=>box.open('v1:'+raw.toString('base64')));assert.throws(()=>sealer('b'.repeat(32)).open(sealed));assert.throws(()=>sealer('short'))});
 test('NEP-413 signatures verify only for the signed nonce and recipient',()=>{const k=KeyPair.fromRandom('ed25519'),p={message:'Sign in to PayGate',nonce:Buffer.alloc(32,7),recipient:'paygate.example',callbackUrl:'https://paygate.example/wallet-callback.html'},sig=Buffer.from(signNep413(k.toString(),p),'base64');
 assert.ok(k.getPublicKey().verify(nep413Hash(p),sig));assert.equal(k.getPublicKey().verify(nep413Hash({...p,nonce:Buffer.alloc(32,8)}),sig),false);assert.equal(k.getPublicKey().verify(nep413Hash({...p,recipient:'evil.example'}),sig),false)});
+test('sign-in accepts base64 and base58 signatures and checks the key on-chain',async()=>{
+ const k=KeyPair.fromRandom('ed25519'),pk=k.getPublicKey().toString(),p={message:'Sign in to PayGate',nonce:Buffer.alloc(32,3),recipient:'paygate.example',callbackUrl:'https://paygate.example/wallet-callback.html'};
+ const b64=signNep413(k.toString(),{...p,callbackUrl:null}),b58=baseEncode(Buffer.from(b64,'base64'));
+ const provider=key=>({viewAccessKey:async({publicKey})=>{if(publicKey!==pk)throw Error('no key');return {permission:key}}});
+ for(const signature of [b64,b58,'ed25519:'+b58])assert.equal(await verifySignIn(provider('FullAccess'),{accountId:'a.near',publicKey:pk,signature,...p}),'a.near');
+ await assert.rejects(verifySignIn(provider({FunctionCall:{}}),{accountId:'a.near',publicKey:pk,signature:b64,...p}),/full-access/);
+ await assert.rejects(verifySignIn(provider('FullAccess'),{accountId:'a.near',publicKey:pk,signature:b64,...p,recipient:'evil.example'}),/does not match/);
+});
