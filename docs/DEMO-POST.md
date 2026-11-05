@@ -24,4 +24,4 @@ Edit before posting. Replace the repository link with your own.
 4. Open Controls, show the contract's limits, and freeze the vault.
 5. Close on the Evidence room's enclave report check.
 
-Say on camera which network the vault is on. For an agent-written delivery in step 3, set `NEAR_AI_API_KEY`; otherwise record the delivery yourself.
+Say on camera which network the vault is on. For an agent-written delivery in step 3, add your NEAR AI Cloud key in Settings first; otherwise record the delivery yourself.

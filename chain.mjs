@@ -7,8 +7,8 @@ const TGAS=1000000000000n,ONE_YOCTO=1n,GAS=60n*TGAS,REQUEST_GAS=40n*TGAS,UNIT=10
 export const CODE=new URL('./contract/res/paygate_vault.wasm',import.meta.url);
 export const FACTORY_CODE=new URL('./contract/res/paygate_factory.wasm',import.meta.url);
 export const NETWORKS={
- mainnet:{rpcUrl:'https://free.rpc.fastnear.com',fallbackRpc:'https://rpc.mainnet.near.org',wallet:'https://app.mynearwallet.com',explorer:'https://nearblocks.io/txns/'},
- testnet:{rpcUrl:'https://test.rpc.fastnear.com',fallbackRpc:'https://rpc.testnet.near.org',wallet:'https://testnet.mynearwallet.com',explorer:'https://testnet.nearblocks.io/txns/'}
+ mainnet:{rpcUrl:'https://free.rpc.fastnear.com',fallbackRpc:'https://rpc.mainnet.near.org',explorer:'https://nearblocks.io/txns/'},
+ testnet:{rpcUrl:'https://test.rpc.fastnear.com',fallbackRpc:'https://rpc.testnet.near.org',explorer:'https://testnet.nearblocks.io/txns/'}
 };
 // Several comma-separated RPC URLs fail over to each other, so one slow or rate-limited node does not stop payments.
 export function providerFor(rpcUrl){const urls=String(rpcUrl).split(',').map(u=>u.trim()).filter(Boolean);return urls.length>1?new FailoverRpcProvider(urls.map(url=>new JsonRpcProvider({url}))):new JsonRpcProvider({url:urls[0]})}
