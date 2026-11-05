@@ -41,6 +41,10 @@ const store={...raw,get:a=>raw.get(scope(a)),update:(a,fn)=>raw.update(scope(a),
  async apiKey(h){const k=await raw.apiKey(h);return k&&mine(k)?k.slice(network==='testnet'?0:network.length+1):null}};
 setInterval(()=>store.purge().catch(()=>{}),6e5).unref();
 const factory=factoryId?factoryClient({rpcUrl,network,factory:factoryId,walletUrl}):null;
+// Optional gas relayer: an operator account holding only gas money pays for agents' payment requests.
+if(Boolean(env.PAYGATE_RELAYER_ACCOUNT)!==Boolean(env.PAYGATE_RELAYER_KEY))fail('Set both PAYGATE_RELAYER_ACCOUNT and PAYGATE_RELAYER_KEY, or neither.');
+if(env.PAYGATE_RELAYER_ACCOUNT&&(!isAccountId(env.PAYGATE_RELAYER_ACCOUNT)||!/^ed25519:/.test(env.PAYGATE_RELAYER_KEY)))fail('PAYGATE_RELAYER_ACCOUNT or PAYGATE_RELAYER_KEY is not valid.');
+const relayer=env.PAYGATE_RELAYER_ACCOUNT?{accountId:env.PAYGATE_RELAYER_ACCOUNT,key:env.PAYGATE_RELAYER_KEY}:null;
 const provider=(factory||factoryClient({rpcUrl,network,factory:'none',walletUrl})).provider;
 const explorer=NETWORKS[network]?.explorer||null;
 const hits=new Map(),SESSION_MS=7*864e5,MESSAGE='Sign in to PayGate';
@@ -60,7 +64,7 @@ const clients=new Map();
 function vaultFor(account,profile){
  const v=profile.vault;if(!v)return null;
  const key=v.vault+v.agentKey;let c=clients.get(account);
- if(c?.key!==key){c={key,client:vaultClient({network,rpcUrl,vault:v.vault,agent:v.agent,owner:account,agentKey:box.open(v.agentKey),walletUrl})};clients.set(account,c)}
+ if(c?.key!==key){c={key,client:vaultClient({network,rpcUrl,vault:v.vault,agent:v.agent,owner:account,agentKey:box.open(v.agentKey),walletUrl,relayer})};clients.set(account,c)}
  return c.client;
 }
 const need=v=>{if(!v)throw Error('Create your vault first.');return v};
@@ -327,7 +331,7 @@ if(path.startsWith('/api/')){
  const account=await signedIn(req);if(!account)return json(401,{error:'Sign in first.'});
  if(path==='/api/state'&&req.method==='GET')return json(200,await snapshot(account));
  if(path==='/api/verify'&&req.method==='GET'){const w=(await store.get(account))?.workspace;return json(200,{valid:verify(w?.receipts||[]),count:w?.receipts.length||0})}
- if(path==='/api/integrations'&&req.method==='GET'){const r=await store.get(account),v=r?.profile?.vault;return json(200,[{name:'NEAR spending vault',state:v?'live':'off',detail:v?`${v.vault} on ${network}`:'Create your vault to start paying'},...integrations(Boolean(r?.profile?.aiKey))])}
+ if(path==='/api/integrations'&&req.method==='GET'){const r=await store.get(account),v=r?.profile?.vault;return json(200,[{name:'NEAR spending vault',state:v?'live':'off',detail:v?`${v.vault} on ${network}`:'Create your vault to start paying'},{name:'Gas relayer (NEP-366)',state:relayer?'live':'off',detail:relayer?`${relayer.accountId} pays your agent's gas, so its allowance never runs out`:'Not enabled on this server. Your agent pays its own gas from a 0.25 NEAR allowance'},...integrations(Boolean(r?.profile?.aiKey))])}
  if(path==='/api/vault'&&req.method==='GET'){const r=await store.get(account),v=vaultFor(account,r?.profile||{});if(!v)return json(200,{configured:false});try{return json(200,await vaultView(v))}catch(e){return json(502,{error:'Cannot reach the NEAR node: '+reason(e)})}}
  if(path==='/api/attestation'&&req.method==='GET'){if(limited('attestation '+account,10,6e4))return json(429,{error:'Too many report checks. Try again in a minute.'});try{return json(200,await attestation())}catch(e){return json(502,{error:e.message})}}
  if(path==='/api/action'&&req.method==='POST'){
@@ -343,4 +347,4 @@ if(path.startsWith('/api/')){
 }
 if(req.method!=='GET')return json(405,{error:'Method not allowed.'});const name=routes[path]||(!path.includes('.')?'index.html':null);if(!name)return json(404,{error:'Not found.'});let data=await readFile(new URL(name,root));if(name.endsWith('.html'))data=String(data).replaceAll('__CSP_NONCE__',nonce);res.writeHead(200,{'Content-Type':types[name.split('.').pop()]+'; charset=utf-8','Cache-Control':'no-cache'});res.end(data);
 }catch(e){return json(400,{error:reason(e)||'Unable to complete request.'})}
-}).on('error',e=>fail(e.code==='EADDRINUSE'?`Port ${port} is in use. Stop the other server or set PORT.`:e.message)).listen(port,env.HOST||(hosted?'0.0.0.0':'127.0.0.1'),()=>console.log(`PayGate → ${hosted?publicUrl:origins[0]} · ${network}${factoryId?' · factory '+factoryId:' · no factory'} · ${store.kind} storage`));
+}).on('error',e=>fail(e.code==='EADDRINUSE'?`Port ${port} is in use. Stop the other server or set PORT.`:e.message)).listen(port,env.HOST||(hosted?'0.0.0.0':'127.0.0.1'),()=>console.log(`PayGate → ${hosted?publicUrl:origins[0]} · ${network}${factoryId?' · factory '+factoryId:' · no factory'}${relayer?' · relayer '+relayer.accountId:''} · ${store.kind} storage`));

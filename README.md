@@ -69,6 +69,7 @@ A worst-case attack demo hijacks the agent and uses its real key to try 12 ways 
 | **On-chain rules** | Payee allowlist, automatic, per-payment and daily limits, one payment per job, held payments, freeze, and withdrawal that works while frozen. |
 | **Wallet approvals** | Approve, reject, freeze, change limits, add or remove payees, withdraw, each signed in the customer's connected wallet and checked on-chain. Other wallets and NEAR CLI work by pasting the transaction hash. |
 | **Jobs workflow** | Create, deliver, review, pay or hold, approve or reject, cancel. Budgets are checked against limits and against funds already committed. |
+| **Gas relayer** | Optional. Agents sign meta-transactions (NEP-366) and an operator relayer account pays the gas, so an agent's allowance never runs out. NEAR still enforces the agent key's restriction on every relayed call. |
 | **Alerts** | Signed webhooks for Slack, Discord or any https endpoint, and Telegram, when a payment waits for approval, when one is paid, and when an agent delivers work. Each alert links straight to the job. |
 | **Agent API and MCP** | Customers create scoped API keys so their own AI agents can read the vault, create jobs, deliver work and request payment over REST (`/api/v1`) or as MCP tools (`/mcp`). Agents can never approve, freeze, change limits or payees, or withdraw. |
 | **Bring your own AI** | Customers add their own NEAR AI Cloud key, stored encrypted, to let the agent do the work. Chat id, request and response hashes and the response signature are kept with the receipt. |
@@ -292,6 +293,7 @@ npm run check:deployed -- https://your-domain.up.railway.app
 | `NEAR_RPC_URL` | FastNEAR free RPC | RPC endpoint. Several comma-separated URLs fail over to each other. Use a dedicated provider for a public mainnet service. Required for `sandbox` |
 | `NEAR_AI_MODEL` | `qwen/qwen3.5-397b-a17b` | Model for inference and attestation |
 | `TELEGRAM_BOT_TOKEN` | none | Optional. A bot from @BotFather; turns on Telegram alerts |
+| `PAYGATE_RELAYER_ACCOUNT`, `PAYGATE_RELAYER_KEY` | none | Optional gas relayer: an account holding only gas money that pays for agents' payment requests |
 | `DATA_DIR` | `./data` | Local data folder |
 | `PORT`, `HOST` | `3000`; `127.0.0.1` locally, `0.0.0.0` hosted | Listen address |
 
@@ -322,7 +324,7 @@ Platform deployment only: `NEAR_OPERATOR_ACCOUNT`, `NEAR_OPERATOR_KEY`, `FACTORY
 - **Server breach.** Someone with the server and `PAYGATE_SECRET` can use agent keys to spend up to each customer's automatic limit per payment and daily limit, only to that customer's payees. They cannot approve held payments, change rules or withdraw.
 - **Fixed daily windows.** Spending at the end of one window and the start of the next can reach twice the daily limit in a short time.
 - **Agent quotas.** A hijacked agent can use its 50 daily requests or fill the queue of 20 held payments until the customer rejects them.
-- **Gas allowance.** The agent's 0.25 NEAR allowance eventually runs out; the customer can name a new agent with `set_agent`.
+- **Gas allowance.** Without a relayer, the agent's 0.25 NEAR allowance eventually runs out; the customer can name a new agent with `set_agent`. With a relayer, the relayer pays instead; someone with the server could spend the relayer's gas money, never customers' funds.
 - **No independent audit yet.**
 
 Full trust boundaries are in [REPRODUCIBILITY.md](REPRODUCIBILITY.md).
@@ -397,6 +399,7 @@ POST requests need the header `X-PayGate: 1`. Account endpoints need a session.
 - automatic and approved payments, rejections, freeze, limits, payees and withdrawal;
 - forged approvals and injected results;
 - signed webhook and Telegram alerts for held and paid payments;
+- every agent payment relayed (NEP-366), with the agent's allowance untouched;
 - agent API keys over REST and MCP, read-only and revoked keys;
 - isolation between two customers, taken vault names, and forged and replayed sign-ins;
 - data deletion and the mobile layout.

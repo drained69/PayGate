@@ -21,6 +21,7 @@ export function startPlatform(){
   const {factory}=await deployPlatform({rpcUrl:sandbox.rpcUrl,operator});
   const customers={[`alice.${DEFAULT_ACCOUNT_ID}`]:await account(operator,`alice.${DEFAULT_ACCOUNT_ID}`,'20'),[`bob.${DEFAULT_ACCOUNT_ID}`]:await account(operator,`bob.${DEFAULT_ACCOUNT_ID}`,'20')};
   const payee=`payee.${DEFAULT_ACCOUNT_ID}`;await account(operator,payee,'0.01');
-  return {sandbox,operator,factory,customers,payee,rpcUrl:sandbox.rpcUrl};
+  const relayer={accountId:`relayer.${DEFAULT_ACCOUNT_ID}`,key:await account(operator,`relayer.${DEFAULT_ACCOUNT_ID}`,'5')};
+  return {sandbox,operator,factory,customers,payee,relayer,rpcUrl:sandbox.rpcUrl};
  });
 }

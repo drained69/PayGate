@@ -155,6 +155,8 @@ railway up --service paygate</code></pre>
 <tr><td><code>PAYGATE_SECRET</code></td><td>At least 32 characters. Required when hosted</td></tr>
 <tr><td><code>PUBLIC_URL</code></td><td>The public https address</td></tr>
 <tr><td><code>NEAR_RPC_URL</code></td><td>RPC endpoint. Comma-separated URLs fail over. Use a dedicated provider for mainnet</td></tr>
+<tr><td><code>PAYGATE_RELAYER_ACCOUNT</code>, <code>PAYGATE_RELAYER_KEY</code></td><td>Optional gas relayer (NEP-366). Create an account holding a few NEAR for gas only; agents' payment requests are relayed through it, so their allowance never runs out</td></tr>
+<tr><td><code>TELEGRAM_BOT_TOKEN</code></td><td>Optional Telegram alerts, with a bot from @BotFather</td></tr>
 </tbody></table>`},
 {id:'security',title:'Security model',html:`
 <p class="eyebrow">Trust</p><h1>Security model</h1>

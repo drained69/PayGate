@@ -1,6 +1,6 @@
 import {readFile} from 'node:fs/promises';
 import {createHash} from 'node:crypto';
-import {Account,JsonRpcProvider,FailoverRpcProvider,KeyPair,KeyPairSigner,PublicKey,actions,createTransaction,encodeTransaction,baseDecode,baseEncode,nearToYocto} from 'near-api-js';
+import {Account,JsonRpcProvider,FailoverRpcProvider,KeyPair,KeyPairSigner,PublicKey,actions,buildDelegateAction,createTransaction,encodeTransaction,baseDecode,baseEncode,nearToYocto} from 'near-api-js';
 const TGAS=1000000000000n,ONE_YOCTO=1n,GAS=60n*TGAS,UNIT=10n**20n;
 export const CODE=new URL('./contract/res/paygate_vault.wasm',import.meta.url);
 export const FACTORY_CODE=new URL('./contract/res/paygate_factory.wasm',import.meta.url);
@@ -120,10 +120,24 @@ export async function provision({rpcUrl,owner,limits,payees=[],vaultNear='3',age
 // One customer's vault, driven with that customer's agent key. Owner actions become wallet links.
 export function vaultClient(config){
  const {rpcUrl,vault,agent,owner,network}=config,net=NETWORKS[network]||{},provider=providerFor(rpcUrl),agentAccount=accountFor(rpcUrl,agent,config.agentKey);
+ const agentPair=KeyPair.fromString(config.agentKey),agentSigner=new KeyPairSigner(agentPair),relayer=config.relayer?accountFor(rpcUrl,config.relayer.accountId,config.relayer.key):null;
+ // With a relayer, the agent signs a meta-transaction (NEP-366) and the relayer pays the gas, so the agent's allowance never runs out.
+ // The agent key's restriction still applies: NEAR checks the method and receiver of the signed delegate action.
+ async function relayed(method,args){
+  const opt={finality:'optimistic'},ak=await provider.viewAccessKey({accountId:agent,publicKey:agentPair.getPublicKey().toString(),finalityQuery:opt}),block=await provider.viewBlock({finality:'final'});
+  const da=buildDelegateAction({actions:[actions.functionCall(method,args,GAS,0n)],maxBlockHeight:BigInt(block.header.height)+120n,nonce:BigInt(ak.nonce)+1n,publicKey:agentPair.getPublicKey(),receiverId:vault,senderId:agent});
+  const r=await relayer.signAndSendTransaction({receiverId:agent,actions:[actions.signedDelegate((await agentSigner.signDelegateAction(da)).signedDelegate)]});
+  // The relayer's transaction succeeds even when the call inside fails, so the vault's own receipt decides.
+  const own=r.receipts_outcome.find(x=>x.outcome.executor_id===vault&&(x.outcome.status.SuccessValue!==undefined||x.outcome.status.Failure));
+  if(!own)throw Error('The relayed request did not reach the vault.');
+  if(own.outcome.status.Failure)throw Error(JSON.stringify(own.outcome.status.Failure));
+  return {...r,status:{SuccessValue:own.outcome.status.SuccessValue}};
+ }
+ const call=(method,args)=>relayer?relayed(method,args).catch(e=>/does not allow|panicked|Smart contract|already been paid|not on the allowlist|limit|frozen|Invalid job/i.test(reason(e))?Promise.reject(e):agentAccount.callFunctionRaw({contractId:vault,methodName:method,args,gas:GAS})):agentAccount.callFunctionRaw({contractId:vault,methodName:method,args,gas:GAS});
  let queue=Promise.resolve();const serial=fn=>{const run=queue.then(fn);queue=run.catch(()=>{});return run};
  const view=(method,args={})=>provider.callFunction({contractId:vault,method,args,blockQuery:{finality:'optimistic'}});
  return {
-  network,vault,owner,agent,provider,walletUrl:config.walletUrl||null,
+  network,vault,owner,agent,provider,walletUrl:config.walletUrl||null,relayed:Boolean(relayer),
   explorer:hash=>net.explorer&&hash?net.explorer+hash:null,
   async policy(){const p=await view('get_policy');return {...p,spendable:toNear(p.balance),spent:toNear(p.spent_in_window),limits:{auto:toNear(p.limits.auto_limit),max:toNear(p.limits.max_payment),daily:toNear(p.limits.daily_limit)}}},
   pending:()=>view('get_pending'),
@@ -132,7 +146,7 @@ export function vaultClient(config){
   async request(job,key){
    const amount=toYocto(job.amount);let result,id,status;
    try{
-    result=await serial(()=>agentAccount.callFunctionRaw({contractId:vault,methodName:'request_payment',args:{recipient:job.payee,amount,job_id:key},gas:GAS}));
+    result=await serial(()=>call('request_payment',{recipient:job.payee,amount,job_id:key}));
     ({id,status}=JSON.parse(Buffer.from(result.status.SuccessValue,'base64').toString()));
    }catch(e){
     // An earlier attempt may have stopped after the request landed. Resume it only if it asks for exactly what this job owes, because the agent key could have placed it.

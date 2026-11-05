@@ -70,6 +70,9 @@ try{
  const start=await balance(payee);
  await nav('Jobs');await row('Small job').getByRole('button',{name:'Review & pay'}).click();await page.getByRole('button',{name:'Pay 0.05 NEAR'}).click();await toast('Paid from the vault.');
  assert.equal(await balance(payee)-start,BigInt(toYocto(0.05)));
+ // The relayer paid the gas: the agent's own allowance and balance did not move.
+ const agentKeyAfter=(await provider.viewAccessKeyList({accountId:agent,blockQuery:{finality:'optimistic'}})).keys[0].access_key.permission.FunctionCall.allowance;assert.equal(agentKeyAfter,toYocto(0.25),'agent gas allowance untouched');
+ assert.match(await page.request.get(url+'/api/integrations').then(r=>r.text()),/relayer\.sandbox pays your agent/);
  await create('Large job',0.3);await page.locator('#job-dialog').waitFor({state:'hidden'});
  await row('Large job').getByRole('button',{name:'Record delivery'}).click();await page.getByLabel('Delivery').fill('Report: https://example.com/report.pdf');await page.getByRole('button',{name:'Save delivery'}).click();await toast('Delivery recorded');
  await row('Large job').getByRole('button',{name:'Review & pay'}).click();await page.locator('#review-dialog').getByText('Recorded by owner').waitFor();await page.getByRole('button',{name:'Request payment'}).click();
@@ -149,5 +152,5 @@ try{
  await nav('Controls');await page.screenshot({path:'test-results/chain-controls.png',fullPage:true});
  await page.setViewportSize({width:390,height:844});await nav('Jobs');await page.screenshot({path:'test-results/chain-mobile.png',fullPage:true});assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
  assert.deepEqual(errors,[]);
- console.log('Chain checks passed: public pages, wallet sign-in, vault from the factory (keyless vault, restricted agent, owner on-chain), keys kept from the browser, payee labels, freeze, NEAR AI key, limit errors, agent delivery, USD quote, automatic and approved payments, rejection, receipts and transactions, forged approvals and injected results, limits, payees, withdrawal, signed webhook and Telegram alerts for held and paid payments, agent API keys, REST and MCP payments within limits, read-only and revoked keys, customer isolation, taken names, vault found on-chain without a hash, full refund of a large failed deposit, forged and replayed sign-ins, data deletion, mobile layout.');
+ console.log('Chain checks passed: public pages, wallet sign-in, vault from the factory (keyless vault, restricted agent, owner on-chain), keys kept from the browser, payee labels, freeze, NEAR AI key, limit errors, agent delivery, USD quote, automatic and approved payments, rejection, receipts and transactions, forged approvals and injected results, limits, payees, withdrawal, signed webhook and Telegram alerts for held and paid payments, gas relayer (agent allowance untouched), agent API keys, REST and MCP payments within limits, read-only and revoked keys, customer isolation, taken names, vault found on-chain without a hash, full refund of a large failed deposit, forged and replayed sign-ins, data deletion, mobile layout.');
 }finally{await browser?.close();await app.stop();await stub.close();receiver.close();tgApi.close()}
