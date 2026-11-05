@@ -173,7 +173,7 @@ export function vaultClient(config){
    if(status==='sent'&&found(result,'payment_failed',id))throw Error(`The transfer to ${job.payee} failed and was refunded to the vault.`);
    return {paymentId:id,status,amountYocto:amount,txHash:txHash(result)};
   },
-  ownerLink(method,args,callbackUrl){return walletLink({provider,walletUrl:this.walletUrl,signer:owner,receiver:vault,method,args,callbackUrl})},
+  ownerLink(method,args,callbackUrl,gas){return walletLink({provider,walletUrl:this.walletUrl,signer:owner,receiver:vault,method,args,callbackUrl,...(gas?{gas}:{})})},
   confirmOwner(hash,methods,check){return checkTx(provider,hash,{signer:owner,receiver:vault,methods,check,network})},
   // The vault's payment id for a job, from its payment_sent event.
   sentId:(outcome,jobId)=>events(outcome,'paygate_vault').filter(e=>e.event==='payment_sent').flatMap(items).find(d=>d.job_id===jobId)?.id??null,

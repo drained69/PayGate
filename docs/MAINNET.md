@@ -11,7 +11,7 @@ The review covered the vault and factory contracts, the server (sign-in, session
 | Area | Finding | Severity | Change |
 | --- | --- | --- | --- |
 | Vault | A USDC vault's NEAR (storage money and registration funds) could never be returned to the owner, because `withdraw` sends the token. | Medium | New owner method `withdraw_near(amount)`. It returns only NEAR not locked for storage. `get_policy` now reports `near_balance`. |
-| Vault, app | A USDC vault spends about 0.0007 NEAR of storage per payment, and 0.00125 NEAR per cross-chain payout. Once its NEAR runs out, payments fail. No funds are lost. | Medium (operational) | Treasury shows the vault's NEAR, an estimate of payments left, a low-balance warning and a NEAR withdrawal form. |
+| Vault, app | A USDC vault spends about 0.0015 NEAR of storage per payment, and 0.00125 NEAR per cross-chain payout. Once its NEAR runs out, payments fail. No funds are lost. | Medium (operational) | Treasury shows the vault's NEAR, an estimate of payments left, a low-balance warning and a NEAR withdrawal form. |
 | Alerts | Webhook addresses were checked, then resolved again when sending, so a DNS answer that changed in between could reach a private address (DNS rebinding). | Medium | Alerts now connect through a lookup that rejects private addresses on the IP actually used. Redirects are still not followed. |
 | Cross-chain | Approving a payout twice issued a new quote, and a wallet that signed the earlier one could not be recorded. | Low | The last five quotes for a job are kept, and a payout to any of them is accepted. The vault's one-payment-per-job rule still prevents paying twice. |
 | Server | The factory's feature flags (USDC, cross-chain) were read once at start. A failed first read left them off until a restart. | Low | They are re-read every five minutes. |
@@ -57,7 +57,7 @@ The review covered the vault and factory contracts, the server (sign-in, session
    NEAR_NETWORK=mainnet NEAR_OPERATOR_ACCOUNT=you.near FACTORY_FUND=6 npm run platform:deploy -- --yes-mainnet
    ```
 
-   About 3.3 NEAR stays locked for storage and about 2.7 NEAR stays as a refund buffer. Nothing is burned. The script deletes the factory's key, so check the printed vault hash against the SHA-256 of `contract/res/paygate_vault.wasm`. Each customer's vault locks about 1.87 NEAR of their deposit for its own copy of the code and its state, returned when they close it. The minimum deposit is about 1.9 NEAR with the relayer on, 2.18 without.
+   About 3.5 NEAR stays locked for storage and about 2.5 NEAR stays as a refund buffer. Nothing is burned, and `retire()` (operator only, 1 yoctoNEAR) returns all of it if you ever replace the factory. The script deletes the factory's key, so check the printed vault hash against the SHA-256 of `contract/res/paygate_vault.wasm`. Each customer's vault locks about 1.99 NEAR of their deposit for its own copy of the code and its state, returned when they close it. The minimum deposit is about 2.02 NEAR with the relayer on, 2.30 without.
 
 3. **Create a separate mainnet service.** Keep testnet running for rehearsals. The mainnet service needs its own Postgres and its own `PAYGATE_SECRET`, stored in a password manager.
 

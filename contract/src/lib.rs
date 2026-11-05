@@ -5,9 +5,9 @@
 use near_sdk::json_types::U128;
 use near_sdk::serde::Serialize;
 use near_sdk::serde_json;
-use near_sdk::store::{IterableMap, IterableSet, LookupSet};
+use near_sdk::store::{IterableMap, IterableSet};
 use near_sdk::{
-    assert_one_yocto, env, near, require, AccountId, Gas, NearToken, PanicOnDefault, Promise,
+    assert_one_yocto, env, near, require, AccountId, CryptoHash, Gas, NearToken, PanicOnDefault, Promise,
     PromiseError, PromiseOrValue,
 };
 
@@ -17,6 +17,9 @@ const MAX_REQUESTS_PER_WINDOW: u32 = 50;
 const MAX_JOB_ID_LEN: usize = 64;
 const CALLBACK_GAS: Gas = Gas::from_tgas(5);
 const FT_TRANSFER_GAS: Gas = Gas::from_tgas(15);
+/// Records removed per receipt while closing. NEAR refuses to delete an account holding more than
+/// about 10 KB of state, so `close` clears payees and paid-job records in batches before deleting.
+const SWEEP_BATCH: usize = 100;
 const STORAGE_DEPOSIT_GAS: Gas = Gas::from_tgas(10);
 /// NEP-145 registration for one account on a token such as USDC; any excess is refunded by the token.
 const TOKEN_STORAGE: NearToken = NearToken::from_yoctonear(1_250_000_000_000_000_000_000);
@@ -60,6 +63,8 @@ pub struct Policy {
     pub token: Option<AccountId>,
     /// NEAR not locked for storage. For a token vault it pays for storage and payout registrations.
     pub near_balance: NearToken,
+    /// True once `close` has started.
+    pub closing: bool,
 }
 
 #[near(event_json(standard = "paygate_vault"))]
@@ -91,12 +96,15 @@ pub struct Vault {
     requests_in_window: u32,
     recipients: IterableSet<AccountId>,
     pending: IterableMap<u64, Payment>,
-    used_jobs: LookupSet<String>,
+    /// SHA-256 of each job id already paid or held, so a job is never paid twice.
+    used_jobs: IterableSet<CryptoHash>,
     token: Option<AccountId>,
     /// Token units the vault holds, credited only through `ft_on_transfer` from `token`.
     token_balance: u128,
     /// Transfers whose callback has not run yet. The vault cannot be closed while any are in flight.
     in_flight: u32,
+    /// Set by `close`: payments and deposits stop while the vault clears its records and deletes itself.
+    closing: bool,
 }
 
 #[near]
@@ -127,10 +135,11 @@ impl Vault {
             requests_in_window: 0,
             recipients: IterableSet::new(b"r"),
             pending: IterableMap::new(b"p"),
-            used_jobs: LookupSet::new(b"j"),
+            used_jobs: IterableSet::new(b"j"),
             token,
             token_balance: 0,
             in_flight: 0,
+            closing: false,
         };
         for recipient in recipients.unwrap_or_default() {
             vault.recipients.insert(recipient);
@@ -144,7 +153,7 @@ impl Vault {
     /// NEP-141 receiver. Credits deposits of the vault's token from anyone; refuses other tokens by returning them.
     pub fn ft_on_transfer(&mut self, sender_id: AccountId, amount: U128, msg: String) -> PromiseOrValue<U128> {
         let _ = (sender_id, msg);
-        if self.token.as_ref() != Some(&env::predecessor_account_id()) {
+        if self.token.as_ref() != Some(&env::predecessor_account_id()) || self.closing {
             return PromiseOrValue::Value(amount);
         }
         self.token_balance = self.token_balance.saturating_add(amount.0);
@@ -159,11 +168,12 @@ impl Vault {
     ) -> RequestResult {
         require!(env::predecessor_account_id() == self.agent, "Only the agent can request payments");
         require!(!self.frozen, "Payments are frozen");
+        require!(!self.closing, "The vault is closing");
         require!(self.recipients.contains(&recipient), "Recipient is not on the allowlist");
         require!(!amount.is_zero(), "Amount must be positive");
         require!(amount <= self.limits.max_payment, "Amount exceeds the per-payment limit");
         require!(!job_id.is_empty() && job_id.len() <= MAX_JOB_ID_LEN, "Invalid job id");
-        require!(!self.used_jobs.contains(&job_id), "Job has already been paid or requested");
+        require!(!self.used_jobs.contains(&job_key(&job_id)), "Job has already been paid or requested");
         self.roll_window();
         require!(self.requests_in_window < MAX_REQUESTS_PER_WINDOW, "Too many requests in this window");
         require!(
@@ -171,7 +181,7 @@ impl Vault {
             "Amount exceeds the daily limit"
         );
         self.requests_in_window += 1;
-        self.used_jobs.insert(job_id.clone());
+        self.used_jobs.insert(job_key(&job_id));
         let id = self.next_id;
         self.next_id += 1;
         let payment = Payment { id, recipient, amount, job_id };
@@ -196,6 +206,7 @@ impl Vault {
     pub fn approve_payment(&mut self, id: u64) {
         self.assert_owner();
         require!(!self.frozen, "Payments are frozen");
+        require!(!self.closing, "The vault is closing");
         let payment = self.pending.remove(&id).unwrap_or_else(|| env::panic_str("Payment not found"));
         require!(self.recipients.contains(&payment.recipient), "Recipient is not on the allowlist");
         require!(payment.amount <= self.limits.max_payment, "Amount exceeds the per-payment limit");
@@ -211,13 +222,14 @@ impl Vault {
         self.assert_owner();
         require!(self.token.is_some(), "External payments need a token vault");
         require!(!self.frozen, "Payments are frozen");
+        require!(!self.closing, "The vault is closing");
         require!(!amount.is_zero(), "Amount must be positive");
         require!(amount <= self.limits.max_payment, "Amount exceeds the per-payment limit");
         require!(!job_id.is_empty() && job_id.len() <= MAX_JOB_ID_LEN, "Invalid job id");
-        require!(!self.used_jobs.contains(&job_id), "Job has already been paid or requested");
+        require!(!self.used_jobs.contains(&job_key(&job_id)), "Job has already been paid or requested");
         require!(self.free_near() >= TOKEN_STORAGE, "The vault needs a little NEAR to register the address");
         self.roll_window();
-        self.used_jobs.insert(job_id.clone());
+        self.used_jobs.insert(job_key(&job_id));
         let id = self.next_id;
         self.next_id += 1;
         self.pay_with(Payment { id, recipient, amount, job_id }, true);
@@ -228,7 +240,7 @@ impl Vault {
     pub fn reject_payment(&mut self, id: u64) {
         self.assert_owner();
         let payment = self.pending.remove(&id).unwrap_or_else(|| env::panic_str("Payment not found"));
-        self.used_jobs.remove(&payment.job_id);
+        self.used_jobs.remove(&job_key(&payment.job_id));
         Event::PaymentRejected { id }.emit();
     }
 
@@ -249,6 +261,7 @@ impl Vault {
     #[payable]
     pub fn set_recipient(&mut self, recipient: AccountId, allowed: bool) {
         self.assert_owner();
+        require!(!self.closing, "The vault is closing");
         if allowed {
             self.recipients.insert(recipient);
         } else {
@@ -293,14 +306,24 @@ impl Vault {
 
     /// Deletes the vault and sends all of its NEAR to the owner, including what its code and state
     /// lock for storage. Only once no payment is held, no transfer is in flight and no tokens are left.
+    /// It first clears the vault's records in batches; if the gas runs out first, calling it again resumes.
     #[payable]
     pub fn close(&mut self) -> Promise {
         self.assert_owner();
-        require!(self.pending.is_empty(), "Approve or reject held payments first");
-        require!(self.in_flight == 0, "A transfer is still in progress. Try again in a moment");
-        require!(self.token_balance == 0, "Withdraw the vault's tokens first");
-        Event::VaultClosed { beneficiary: self.owner.clone() }.emit();
-        Promise::new(env::current_account_id()).delete_account(self.owner.clone())
+        if !self.closing {
+            require!(self.pending.is_empty(), "Approve or reject held payments first");
+            require!(self.in_flight == 0, "A transfer is still in progress. Try again in a moment");
+            require!(self.token_balance == 0, "Withdraw the vault's tokens first");
+            self.closing = true;
+        }
+        self.sweep()
+    }
+
+    /// The next batch of a close, scheduled by the vault itself.
+    #[private]
+    pub fn continue_close(&mut self) -> Promise {
+        require!(self.closing, "The vault is not closing");
+        self.sweep()
     }
 
     /// Restores the token ledger if a token withdrawal failed.
@@ -329,7 +352,7 @@ impl Vault {
             if window_start_ms == self.window_start_ms {
                 self.spent_in_window = self.spent_in_window.saturating_sub(amount);
             }
-            self.used_jobs.remove(&job_id);
+            self.used_jobs.remove(&job_key(&job_id));
             Event::PaymentFailed { id }.emit();
         }
     }
@@ -346,6 +369,7 @@ impl Vault {
             balance: self.available(),
             token: self.token.clone(),
             near_balance: self.free_near(),
+            closing: self.closing,
         }
     }
 
@@ -383,6 +407,25 @@ impl Vault {
 
     fn free_near(&self) -> NearToken {
         env::account_balance().saturating_sub(env::storage_byte_cost().saturating_mul(env::storage_usage() as u128))
+    }
+
+    /// Removes up to `SWEEP_BATCH` records, then deletes the vault, or schedules the next batch.
+    fn sweep(&mut self) -> Promise {
+        let jobs: Vec<CryptoHash> = self.used_jobs.iter().take(SWEEP_BATCH).copied().collect();
+        for job in &jobs {
+            self.used_jobs.remove(job);
+        }
+        let payees: Vec<AccountId> = self.recipients.iter().take(SWEEP_BATCH - jobs.len()).cloned().collect();
+        for payee in &payees {
+            self.recipients.remove(payee);
+        }
+        let me = env::current_account_id();
+        if self.used_jobs.is_empty() && self.recipients.is_empty() {
+            Event::VaultClosed { beneficiary: self.owner.clone() }.emit();
+            Promise::new(me).delete_account(self.owner.clone())
+        } else {
+            Self::ext(me).with_unused_gas_weight(1).continue_close()
+        }
     }
 
     fn pay(&mut self, payment: Payment) {
@@ -437,6 +480,10 @@ struct StorageDepositArgs<'a> {
 
 fn to_json<T: Serialize>(args: &T) -> Vec<u8> {
     serde_json::to_vec(args).unwrap_or_else(|_| env::panic_str("Could not encode call arguments"))
+}
+
+fn job_key(job_id: &str) -> CryptoHash {
+    env::sha256_array(job_id.as_bytes())
 }
 
 /// NEP-141 transfer of `amount` token units; the token requires exactly one yoctoNEAR.
@@ -854,6 +901,43 @@ mod tests {
         let mut v = vault();
         v.request_payment(acct("worker.near"), near(3), "held".into());
         call("owner.near", 1);
+        let _ = v.close();
+    }
+
+    #[test]
+    fn closing_clears_records_in_batches_and_blocks_payments() {
+        let mut v = vault();
+        call("owner.near", 1);
+        for i in 0..150 {
+            v.set_recipient(acct(&format!("p{i}.near")), true);
+        }
+        let _ = v.close();
+        assert!(v.get_policy().closing);
+        assert_eq!(v.recipients.len(), 51, "one batch of 100 records per receipt");
+        call("vault.near", 0);
+        let _ = v.continue_close();
+        assert!(v.recipients.is_empty());
+        call("usdc.near", 0);
+        assert!(matches!(v.ft_on_transfer(acct("owner.near"), U128(5), String::new()), PromiseOrValue::Value(U128(5))));
+    }
+
+    #[test]
+    #[should_panic(expected = "The vault is closing")]
+    fn a_closing_vault_refuses_payments() {
+        let mut v = vault();
+        call("owner.near", 1);
+        let _ = v.close();
+        call("agent.near", 0);
+        v.request_payment(acct("worker.near"), near(1), "late".into());
+    }
+
+    #[test]
+    #[should_panic(expected = "Only the owner")]
+    fn nobody_else_can_continue_a_close() {
+        let mut v = vault();
+        call("owner.near", 1);
+        let _ = v.close();
+        call("attacker.near", 1);
         let _ = v.close();
     }
 

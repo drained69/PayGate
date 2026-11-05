@@ -10,7 +10,7 @@ Non-custodial spending vaults for AI agents on NEAR. The spending rules live in 
 
 [**Live app (testnet)**](https://paygate-production-d611.up.railway.app) · [How it works](#how-it-works) · [NEAR technology](#near-technology-used) · [Architecture](#architecture) · [Quick start](#quick-start) · [Security](#security-model) · [Contracts](#contract-reference)
 
-![Node.js 22.22+](https://img.shields.io/badge/node-%E2%89%A522.22-1b3158) ![NEAR](https://img.shields.io/badge/chain-NEAR-1b3158) ![near-sdk 5.30](https://img.shields.io/badge/near--sdk-5.30-1b3158) ![Contract tests](https://img.shields.io/badge/contract%20tests-45%20passing-2f7d55) ![App tests](https://img.shields.io/badge/app%20tests-28%20passing-2f7d55) ![License: MIT](https://img.shields.io/badge/license-MIT-1b3158)
+![Node.js 22.22+](https://img.shields.io/badge/node-%E2%89%A522.22-1b3158) ![NEAR](https://img.shields.io/badge/chain-NEAR-1b3158) ![near-sdk 5.30](https://img.shields.io/badge/near--sdk-5.30-1b3158) ![Contract tests](https://img.shields.io/badge/contract%20tests-53%20passing-2f7d55) ![App tests](https://img.shields.io/badge/app%20tests-28%20passing-2f7d55) ![License: MIT](https://img.shields.io/badge/license-MIT-1b3158)
 
 ![PayGate homepage](docs/images/home.jpg)
 
@@ -299,18 +299,20 @@ PayGate charges no fees. Customers fund their own accounts; operators pay only f
 
 | Customer cost | Without relayer | With relayer |
 | --- | --- | --- |
-| Vault code and state, locked in the vault and returned by `close()` | about 1.87 NEAR | about 1.87 NEAR |
+| Vault code and state, locked in the vault and returned by `close()` | about 1.99 NEAR | about 1.99 NEAR |
 | Agent account | 0.3 NEAR | 0.02 NEAR |
-| **Minimum deposit** | **about 2.18 NEAR** | **about 1.9 NEAR** |
+| **Minimum deposit** | **about 2.30 NEAR** | **about 2.02 NEAR** |
 | USDC payee registration | 0.00125 NEAR once per payee | same |
 | Cross-chain payout | NEAR Intents swap fee, plus 0.00125 NEAR to register the deposit address | same |
 
 | Operator cost (once) | Amount |
 | --- | --- |
 | Factory code storage (locked) | about 1.5 NEAR |
-| Vault code stored in the factory (locked) | about 1.8 NEAR |
-| Refund buffer kept in the factory | about 2.7 NEAR |
-| **`FACTORY_FUND`** | **6 NEAR. Nothing is burned** |
+| Vault code stored in the factory (locked) | about 1.9 NEAR |
+| Refund buffer kept in the factory | about 2.5 NEAR |
+| **`FACTORY_FUND`** | **6 NEAR. Nothing is burned, and `retire()` returns it all** |
+
+The operator who deployed the factory can call `retire()` to delete it and get all 6 NEAR back. Vaults already created are separate accounts and keep working; only new vault creation stops.
 
 The factory stores the vault code once and deploys a copy into each vault. This replaced publishing the code as a global contract, which burns ten times the storage cost: about 24 NEAR for this contract.
 
@@ -326,7 +328,7 @@ NEAR_NETWORK=mainnet NEAR_OPERATOR_ACCOUNT=you.near FACTORY_FUND=6 npm run platf
 
 Without `-- --yes-mainnet` the script checks everything and prints a cost summary, and sends nothing. With it, the script:
 
-1. creates `paygate.you.near` with a temporary key;
+1. creates `paygate.you.near` with a temporary key. Your account becomes its operator, the only account that can later `retire()` it;
 2. deploys the factory and stores the vault code in it, in one transaction;
 3. deletes the factory's key, so nobody can change it;
 4. checks on-chain that the factory has no keys and reports the expected vault code hash.
@@ -389,6 +391,7 @@ Platform deployment only: `NEAR_OPERATOR_ACCOUNT`, `NEAR_OPERATOR_KEY` (prompted
 | Failed transfers restore the ledger, daily spend and job id | Vault callbacks | Funds or limits lost to a failed transfer |
 | Vault initialized only by itself or its creator | Vault | Someone else initializing a new vault |
 | Vault and factory have no keys; vault code fixed in the factory | Deployment | Code swaps and upgrades |
+| Only the operator can retire the factory, and never while a creation is open | Factory | Stranded deposits; interfering with customers' vaults |
 | Factory refunds on failure | Factory | Lost deposits on taken names |
 | Sign-in checked against on-chain full-access keys, single-use nonce | Server | Signing in as someone else; replay |
 | Approvals and vault creation checked on-chain | Server | Forged wallet callbacks |
@@ -409,7 +412,7 @@ Platform deployment only: `NEAR_OPERATOR_ACCOUNT`, `NEAR_OPERATOR_KEY` (prompted
 
 ### Vault
 
-Source: [contract/src/lib.rs](contract/src/lib.rs). Built: `contract/res/paygate_vault.wasm` (182 KB).
+Source: [contract/src/lib.rs](contract/src/lib.rs). Built: `contract/res/paygate_vault.wasm` (194 KB).
 
 | Method | Caller | Description |
 | --- | --- | --- |
@@ -420,24 +423,25 @@ Source: [contract/src/lib.rs](contract/src/lib.rs). Built: `contract/res/paygate
 | `withdraw(amount)` | Owner, 1 yocto | Sends NEAR, or the vault's token, to the owner, even while frozen |
 | `withdraw_near(amount)` | Owner, 1 yocto | Token vaults: returns NEAR not needed for storage |
 | `pay_external(recipient, amount, job_id)` | Owner, 1 yocto | Token vaults: registers `recipient` with the token and pays it within the limits. Used for NEAR Intents deposit addresses |
-| `close()` | Owner, 1 yocto | Deletes the vault and sends all of its NEAR, including storage, to the owner. Only when nothing is held, nothing is in flight and no tokens are left |
+| `close()` | Owner, 1 yocto | Deletes the vault and sends all of its NEAR, including storage, to the owner. Starts only when nothing is held, nothing is in flight and no tokens are left. It stops payments and deposits, clears payees and paid-job records in batches of 100 (NEAR refuses to delete accounts with more than 10 KB of state), then deletes the account. If gas runs out first, calling it again resumes |
 | `ft_on_transfer(sender_id, amount, msg)` | The vault's token | Credits deposits made with `ft_transfer_call`; returns other tokens |
 | `fund()` | Anyone, payable | Adds NEAR |
 | `get_policy()`, `get_pending()`, `get_recipients()` | View | State |
 
-Events (`paygate_vault`): `payment_sent`, `payment_pending`, `payment_rejected`, `payment_failed`, `freeze_changed`, `vault_closed`. Constants: 24-hour window, 20 held payments, 50 requests per window, job ids up to 64 characters.
+Events (`paygate_vault`): `payment_sent`, `payment_pending`, `payment_rejected`, `payment_failed`, `freeze_changed`, `vault_closed`. `get_policy()` also reports `near_balance` and `closing`. Constants: 24-hour window, 20 held payments, 50 requests per window, job ids up to 64 characters.
 
 ### Factory
 
-Source: [contract/factory/src/lib.rs](contract/factory/src/lib.rs). Built: `contract/res/paygate_factory.wasm` (149 KB).
+Source: [contract/factory/src/lib.rs](contract/factory/src/lib.rs). Built: `contract/res/paygate_factory.wasm` (154 KB).
 
 | Method | Caller | Description |
 | --- | --- | --- |
 | `new(vault_code)` | The factory itself, once | Stores the vault code (borsh bytes). `get_config().vault_code` is its SHA-256 |
 | `create_vault(name, agent_key, limits, recipients, token?, agent_fund?)` | Anyone, at least `vault_fund` plus the agent funding | Creates `name.factory` owned by the caller and `name-agent.factory` with one restricted key. `agent_fund` is 0.02 to 1 NEAR, default 0.3; the key's allowance is that minus 0.005 |
-| `get_config()` | View | Code hash, `vault_fund`, default and minimum agent funding, `min_deposit`, token and external-payout support |
+| `retire()` | Operator (the factory's parent account), 1 yocto | Deletes the factory and returns all of its NEAR to the operator. Refused while a vault creation is in progress. Existing vaults are unaffected |
+| `get_config()` | View | Code hash, operator, `vault_fund`, default and minimum agent funding, `min_deposit`, token and external-payout support |
 
-Names are 2 to 32 lowercase letters, digits or single dashes, and cannot end in `-agent`. Events (`paygate_factory`): `vault_created`, `vault_failed`, `agent_failed`.
+Names are 2 to 32 lowercase letters, digits or single dashes, and cannot end in `-agent`. Events (`paygate_factory`): `vault_created`, `vault_failed`, `agent_failed`, `factory_retired`.
 
 Rebuild both contracts with `contract/build.sh` (Rust 1.97.1 and binaryen 133). Each vault's code hash on-chain equals the factory's `vault_code`.
 
@@ -465,8 +469,8 @@ POST requests need the header `X-PayGate: 1`. Account endpoints need a session.
 | Command | What it checks | Needs |
 | --- | --- | --- |
 | `npm test` | 28 tests: job rules, workspace caps, cross-chain payees, NEAR services, encryption, NEP-413, server security, rate limits, startup refusals, alerts, file store | Nothing |
-| `cd contract && cargo test` | 38 vault tests: limits, allowlist, approvals, freeze, failed-transfer recovery, USDC, external payouts, spare NEAR, closing | Rust 1.97.1 |
-| `cd contract/factory && cargo test` | 7 factory tests: names, deposits, agent funding, code hash | Rust 1.97.1 |
+| `cd contract && cargo test` | 41 vault tests: limits, allowlist, approvals, freeze, failed-transfer recovery, USDC, external payouts, spare NEAR, closing in batches | Rust 1.97.1 |
+| `cd contract/factory && cargo test` | 12 factory tests: names, deposits, agent funding, code hash, retiring | Rust 1.97.1 |
 | `npm run demo:attack` | 12 attacks against a real local node | NEAR sandbox |
 | `npm run test:chain` | The full product on a local node (below) | NEAR sandbox, Chromium |
 | `npm run test:browser` | Public pages, docs, legal pages, wallet picker, CSP nonces, mobile layout | Chromium |
@@ -478,6 +482,7 @@ POST requests need the header `X-PayGate: 1`. Account endpoints need a session.
 
 - sign-in, vault creation through the factory, and each vault's code hash matching the factory's;
 - automatic and approved payments, rejections, freeze, limits, payees, withdrawal and closing a vault;
+- retiring the factory: only the operator can, its NEAR returns, and existing vaults keep working;
 - forged approvals and injected results;
 - signed webhook and Telegram alerts;
 - every agent payment relayed (NEP-366), with the agent's allowance untouched;

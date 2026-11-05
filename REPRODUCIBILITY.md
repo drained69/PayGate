@@ -41,8 +41,8 @@ Requires Node.js 22.22.2 or later. Run `npm install`, then `npm run dev:chain`, 
 | Command | Covers |
 | --- | --- |
 | `npm test` | Domain, NEAR services, encryption, NEP-413, server security and the file store, offline |
-| `cd contract && cargo test` | 38 vault tests, including USDC, external payouts, NEAR withdrawals and closing |
-| `cd contract/factory && cargo test` | 7 factory tests |
+| `cd contract && cargo test` | 41 vault tests, including USDC, external payouts, NEAR withdrawals and closing in batches |
+| `cd contract/factory && cargo test` | 12 factory tests, including retiring |
 | `npm run test:postgres` | The store against real Postgres, in Docker or at `DATABASE_URL` |
 | `npm run test:browser` | The public site and the sign-in hand-off |
 | `npm run test:chain` | The whole product on a local node, through the wallet pop-up flow (list below) |

@@ -18,7 +18,7 @@ const provider=new JsonRpcProvider({url:rpcUrl});
 if(await provider.viewAccount({accountId:factory,blockQuery:{finality:'final'}}).then(()=>true,()=>false))stop(`${factory} already exists. Choose another FACTORY_NAME.`);
 // Storage costs 0.01 NEAR per kB and stays locked in the factory. The buffer covers the refund of a failed
 // vault creation, which reaches the factory one receipt after the factory refunds the customer.
-const vaultNear=(await stat(CODE)).size*1e-5,factoryNear=(await stat(FACTORY_CODE)).size*1e-5,buffer=vaultNear+0.6,need=vaultNear+factoryNear+buffer;
+const vaultNear=(await stat(CODE)).size*1e-5,factoryNear=(await stat(FACTORY_CODE)).size*1e-5,buffer=vaultNear+0.3,need=vaultNear+factoryNear+buffer;
 if(Number(fund)<need)stop(`FACTORY_FUND must be at least ${need.toFixed(1)} NEAR.`);
 const {balance}=await operator.getState().catch(()=>stop(`Cannot read ${operator.accountId} on ${network}. Check the account and key.`));
 if(balance.available<nearToYocto(String(Number(fund)+0.1)))stop(`${operator.accountId} has ${yoctoToNear(balance.available)} NEAR available and needs about ${Number(fund)+0.1}.`);

@@ -195,7 +195,8 @@ async function act(c,account,req){
   if(c.kind==='payee'){if(!isAccountId(c.account))throw Error('Enter a valid NEAR account, such as name.near.');if(typeof c.allowed!=='boolean')throw Error('Invalid payee change.');return link('set_recipient',{recipient:c.account,allowed:c.allowed})}
   if(c.kind==='limits'){const l={auto_limit:amount(c.auto,'limits',v.decimals),max_payment:amount(c.max,'limits',v.decimals),daily_limit:amount(c.daily,'limits',v.decimals)};if(!(c.auto<=c.max&&c.max<=c.daily))throw Error('Limits must satisfy automatic ≤ maximum payment ≤ daily.');return link('set_limits',{limits:l})}
   if(c.kind==='withdraw')return link('withdraw',{amount:amount(c.amount,'an amount',v.decimals)});
-  if(c.kind==='close')return link('close',{});
+  // Closing clears the vault's records in batches before deleting it, so it gets the most gas a transaction allows.
+  if(c.kind==='close')return v.ownerLink('close',{},callbackFor(req),300000000000000n);
   if(c.kind==='withdraw-near'){if(!v.token)throw Error('Use the withdrawal form for a NEAR vault.');if((await v.policy()).nearBalance==null)throw Error('This vault was created before NEAR withdrawals existed.');return link('withdraw_near',{amount:amount(c.amount,'an amount',24)})}
   // USDC deposits register the vault with the token and send the USDC in one wallet transaction.
   if(c.kind==='deposit'){if(!v.token)throw Error('Send NEAR to the vault account from any wallet.');return v.tokenLink([{method:'storage_deposit',args:{account_id:v.vault,registration_only:true},deposit:TOKEN_STORAGE},{method:'ft_transfer_call',args:{receiver_id:v.vault,amount:amount(c.amount,'an amount',v.decimals),msg:''},deposit:'1',gas:100000000000000n}],callbackFor(req))}
@@ -235,7 +236,7 @@ async function act(c,account,req){
  // Closing deletes the vault on-chain; PayGate then forgets it and its agent key, and keeps the receipts.
  if(c.action==='vault-closed'){
   need(v);await v.confirmOwner(c.txHash,['close'],()=>true);
-  if(await provider.viewAccount({accountId:v.vault,blockQuery:{finality:'optimistic'}}).then(()=>true,()=>false))throw Error('The vault still exists. It was not closed.');
+  if(await provider.viewAccount({accountId:v.vault,blockQuery:{finality:'optimistic'}}).then(()=>true,()=>false))throw Error((await v.policy().catch(()=>({}))).closing?'The vault is still clearing its records. Select Close vault again to finish; nothing else can happen to it meanwhile.':'The vault still exists. It was not closed.');
   clients.delete(account);await setProfile(x=>{delete x.vault;return x});return snapshot(account);
  }
  if(c.action==='vault-cancel'){await setProfile(x=>{delete x.pending;return x});return snapshot(account)}

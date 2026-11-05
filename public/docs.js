@@ -18,7 +18,7 @@ export const sections=[
 <p class="eyebrow">Concepts</p><h1>How it works</h1>
 <p class="lead">Sign in, create a vault, then pay through it. Each step is checked by something the agent does not control.</p>
 <h2>Sign in</h2><p>Select <b>Sign in with NEAR</b>. Your wallet signs a one-time message (NEP-413). PayGate checks the signature and that the key belongs to your account on-chain. There is no password.</p>
-<h2>Create your vault</h2><p>Choose a name, your first payees, limits and initial funding (at least about 1.9 NEAR when PayGate's gas relayer is on, 2.18 without: a little funds the agent, and about 1.87 NEAR stays locked in your vault for its own copy of the code and its storage, returned if you close the vault). Your wallet signs one call to the PayGate factory, which creates <code>name.factory</code> owned by you and <code>name-agent.factory</code> with a single restricted key. PayGate checks the result on-chain before showing your dashboard.</p>
+<h2>Create your vault</h2><p>Choose a name, your first payees, limits and initial funding (at least about 2.02 NEAR when PayGate's gas relayer is on, 2.30 without: a little funds the agent, and about 1.99 NEAR stays locked in your vault for its own copy of the code and its storage, returned if you close the vault). Your wallet signs one call to the PayGate factory, which creates <code>name.factory</code> owned by you and <code>name-agent.factory</code> with a single restricted key. PayGate checks the result on-chain before showing your dashboard.</p>
 <h2>A payment</h2>
 <ol>
 <li><b>Create a job</b> with a brief, an allowlisted payee and a budget. PayGate checks the budget against your per-payment limit and against funds not already committed to other open jobs.</li>
@@ -150,7 +150,7 @@ curl -X POST $BASE/jobs/PG-1a2b3c4d/pay -H "Authorization: Bearer $KEY"</code></
 <p class="eyebrow">Operate</p><h1>Run your own PayGate</h1>
 <p class="lead">For operators. Customers do not need any of this: they sign in and create a vault.</p>
 <h2>1. Deploy the platform</h2>
-<p>Run once from your own machine with an operator account. It deploys the factory with the vault code stored in it, so every customer vault gets exactly that code, and the factory ends with no keys. Storage locks about 3.3 NEAR and about 2.7 NEAR stays as a refund buffer, so fund it with 6 NEAR. Nothing is burned. Without the confirmation flag it only prints a summary.</p>
+<p>Run once from your own machine with an operator account. It deploys the factory with the vault code stored in it, so every customer vault gets exactly that code, and the factory ends with no keys. Storage locks about 3.5 NEAR and about 2.5 NEAR stays as a refund buffer, so fund it with 6 NEAR. Nothing is burned: the operator can call <code>retire</code> to delete the factory and get it all back, without affecting existing vaults. Without the confirmation flag it only prints a summary.</p>
 <pre><code>NEAR_NETWORK=mainnet NEAR_OPERATOR_ACCOUNT=you.near NEAR_OPERATOR_KEY=ed25519:... \\
 npm run platform:deploy</code></pre>
 <p>Run it again with <code>-- --yes-mainnet</code> to deploy. It prints the <code>PAYGATE_FACTORY</code> value for your server.</p>

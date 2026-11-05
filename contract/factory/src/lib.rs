@@ -3,10 +3,12 @@
 //! funds: each deposit goes to the new accounts, or back to the customer if a step fails.
 //! The vault code is stored once, at setup, and each vault gets a copy of exactly that code.
 //! The factory has no keys and no method that changes the code, so nobody can change it later.
+//! The operator that deployed it (its parent account) can retire it: that deletes the factory and
+//! returns its NEAR to the operator. Vaults already created are separate accounts and do not change.
 use near_sdk::json_types::Base58CryptoHash;
 use near_sdk::serde_json::json;
 use near_sdk::{
-    env, near, require, AccountId, Allowance, CryptoHash, Gas, NearToken, PanicOnDefault, Promise,
+    assert_one_yocto, env, near, require, AccountId, Allowance, CryptoHash, Gas, NearToken, PanicOnDefault, Promise,
     PublicKey,
 };
 
@@ -35,6 +37,8 @@ pub struct Limits {
 #[near(serializers = [json])]
 pub struct Config {
     pub vault_code: Base58CryptoHash,
+    /// The account that can retire the factory.
+    pub operator: AccountId,
     /// Default agent funding, and the least `create_vault` accepts in `agent_fund`.
     pub agent_fund: NearToken,
     pub min_agent_fund: NearToken,
@@ -56,12 +60,19 @@ pub enum Event {
     VaultFailed { owner: AccountId, vault: AccountId },
     #[event_version("1.0.0")]
     AgentFailed { owner: AccountId, vault: AccountId, agent: AccountId },
+    #[event_version("1.0.0")]
+    FactoryRetired { operator: AccountId },
 }
 
 #[near(contract_state)]
 #[derive(PanicOnDefault)]
 pub struct Factory {
     vault_code: CryptoHash,
+    /// The account that deployed the factory: its parent. Only it can retire the factory.
+    operator: AccountId,
+    /// Vault creations whose callbacks have not finished. The factory cannot retire while any are open,
+    /// so a refund always has a factory to come back to.
+    in_flight: u32,
 }
 
 #[near]
@@ -72,8 +83,30 @@ impl Factory {
     pub fn new(#[serializer(borsh)] vault_code: Vec<u8>) -> Self {
         require!(!vault_code.is_empty(), "Vault code is required");
         let hash = env::sha256_array(&vault_code);
+        let me = env::current_account_id();
+        let operator: AccountId = me
+            .as_str()
+            .split_once('.')
+            .and_then(|(_, parent)| parent.parse().ok())
+            .unwrap_or_else(|| env::panic_str("The factory must be a sub-account of its operator"));
         env::storage_write(CODE_KEY, &vault_code);
-        Self { vault_code: hash }
+        Self { vault_code: hash, operator, in_flight: 0 }
+    }
+
+    /// Deletes the factory and sends all of its NEAR to the operator. Only the operator can call it,
+    /// with one yoctoNEAR, and only when no vault creation is in progress. Vaults already created are
+    /// separate accounts with their own code and no keys, so they keep working unchanged; new vaults
+    /// can no longer be created.
+    #[payable]
+    pub fn retire(&mut self) -> Promise {
+        assert_one_yocto();
+        require!(env::predecessor_account_id() == self.operator, "Only the operator can retire the factory");
+        require!(self.in_flight == 0, "A vault is being created. Try again in a moment");
+        // NEAR refuses to delete an account holding more than about 10 KB of state, and the stored vault
+        // code is far larger, so it is removed first. Without it, `create_vault` can no longer run.
+        env::storage_remove(CODE_KEY);
+        Event::FactoryRetired { operator: self.operator.clone() }.emit();
+        Promise::new(env::current_account_id()).delete_account(self.operator.clone())
     }
 
     /// Creates `<name>.<factory>` owned by the caller and `<name>-agent.<factory>`, whose only
@@ -111,6 +144,7 @@ impl Factory {
         let me = env::current_account_id();
         let vault: AccountId = format!("{name}.{me}").parse().unwrap_or_else(|_| env::panic_str("Invalid vault name"));
         let agent: AccountId = format!("{name}-agent.{me}").parse().unwrap_or_else(|_| env::panic_str("Invalid vault name"));
+        self.in_flight += 1;
         let args = json!({ "owner": owner, "agent": agent, "limits": limits, "recipients": recipients, "token": token });
         // Only what the vault's storage needs travels with the creation. If it fails, that much is refunded
         // to the factory in a later receipt, which the factory's buffer covers; the rest never left.
@@ -136,6 +170,7 @@ impl Factory {
         agent_fund: NearToken,
     ) -> Promise {
         if !succeeded() {
+            self.in_flight = self.in_flight.saturating_sub(1);
             Event::VaultFailed { owner: owner.clone(), vault }.emit();
             return Promise::new(owner).transfer(deposit);
         }
@@ -156,6 +191,7 @@ impl Factory {
     /// the owner, who can name another agent with `set_agent`.
     #[private]
     pub fn on_agent(&mut self, owner: AccountId, vault: AccountId, agent: AccountId, agent_fund: NearToken) -> Option<Promise> {
+        self.in_flight = self.in_flight.saturating_sub(1);
         if succeeded() {
             Event::VaultCreated { owner, vault, agent }.emit();
             None
@@ -169,6 +205,7 @@ impl Factory {
         let code_len = env::storage_read(CODE_KEY).map_or(0, |c| c.len());
         Config {
             vault_code: self.vault_code.into(),
+            operator: self.operator.clone(),
             agent_fund: AGENT_FUND,
             min_agent_fund: MIN_AGENT_FUND,
             vault_fund: vault_fund(code_len),
@@ -247,6 +284,67 @@ mod tests {
     #[should_panic(expected = "Attach at least 2.35 NEAR")]
     fn too_small_a_deposit_is_refused() {
         let _ = factory(NearToken::from_millinear(2349)).create_vault("acme".into(), key(), limits(), vec![], None, None);
+    }
+
+    fn as_caller(who: &str, yocto: u128) {
+        testing_env!(VMContextBuilder::new()
+            .current_account_id("factory.near".parse().unwrap())
+            .predecessor_account_id(who.parse().unwrap())
+            .attached_deposit(NearToken::from_yoctonear(yocto))
+            .build());
+    }
+
+    #[test]
+    fn the_operator_is_the_parent_and_can_retire() {
+        let mut f = factory(NearToken::from_near(3));
+        assert_eq!(f.get_config().operator.as_str(), "near");
+        as_caller("near", 1);
+        let _ = f.retire();
+    }
+
+    #[test]
+    #[should_panic(expected = "Only the operator can retire the factory")]
+    fn only_the_operator_can_retire() {
+        let mut f = factory(NearToken::from_near(3));
+        as_caller("owner.near", 1);
+        let _ = f.retire();
+    }
+
+    #[test]
+    #[should_panic(expected = "Requires attached deposit of exactly 1 yoctoNEAR")]
+    fn retiring_needs_a_full_access_key() {
+        let mut f = factory(NearToken::from_near(3));
+        as_caller("near", 0);
+        let _ = f.retire();
+    }
+
+    #[test]
+    #[should_panic(expected = "A vault is being created")]
+    fn retiring_waits_for_vault_creations_in_flight() {
+        let mut f = factory(NearToken::from_near(3));
+        let _ = f.create_vault("acme".into(), key(), limits(), vec![], None, None);
+        as_caller("near", 1);
+        let _ = f.retire();
+    }
+
+    #[test]
+    fn finished_creations_leave_nothing_in_flight() {
+        let mut f = factory(NearToken::from_near(3));
+        let _ = f.create_vault("acme".into(), key(), limits(), vec![], None, None);
+        let _ = f.create_vault("beta".into(), key(), limits(), vec![], None, None);
+        assert_eq!(f.in_flight, 2);
+        testing_env!(
+            VMContextBuilder::new()
+                .current_account_id("factory.near".parse().unwrap())
+                .predecessor_account_id("factory.near".parse().unwrap())
+                .build(),
+            near_sdk::test_vm_config(),
+            near_sdk::RuntimeFeesConfig::test(),
+            Default::default(),
+            vec![near_sdk::PromiseResult::Successful(vec![])]
+        );
+        let _ = f.on_agent("owner.near".parse().unwrap(), "acme.factory.near".parse().unwrap(), "acme-agent.factory.near".parse().unwrap(), AGENT_FUND);
+        assert_eq!(f.in_flight, 1);
     }
 
     #[test]
