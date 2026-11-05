@@ -172,6 +172,8 @@ export function vaultClient(config){
   },
   ownerLink(method,args,callbackUrl){return walletLink({provider,walletUrl:this.walletUrl,signer:owner,receiver:vault,method,args,callbackUrl})},
   confirmOwner(hash,methods,check){return checkTx(provider,hash,{signer:owner,receiver:vault,methods,check,network})},
+  // The vault's payment id for a job, from its payment_sent event.
+  sentId:(outcome,jobId)=>events(outcome,'paygate_vault').filter(e=>e.event==='payment_sent').flatMap(items).find(d=>d.job_id===jobId)?.id??null,
   found
  };
 }

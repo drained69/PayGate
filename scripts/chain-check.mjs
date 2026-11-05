@@ -17,7 +17,7 @@ const hookUrl=`http://127.0.0.1:${receiver.address().port}/paygate`;
 // The public product end to end on a local NEAR node: wallet sign-in, a vault from the factory, payments,
 // approvals and controls, through the same pop-up flow a real wallet uses. A second customer checks isolation.
 const stub=await startStub(),port=3097,url=`http://localhost:${port}`;
-const app=await startChainApp(port,{ONECLICK_URL:stub.url,NEAR_AI_URL:stub.url,PAYGATE_ALLOW_PRIVATE_WEBHOOKS:'1',TELEGRAM_BOT_TOKEN:'123:test',TELEGRAM_API_URL:`http://127.0.0.1:${tgApi.address().port}`});
+const app=await startChainApp(port,{ONECLICK_URL:stub.url,NEAR_AI_URL:stub.url,PAYGATE_ALLOW_PRIVATE_WEBHOOKS:'1',PAYGATE_CROSSCHAIN:'on',TELEGRAM_BOT_TOKEN:'123:test',TELEGRAM_API_URL:`http://127.0.0.1:${tgApi.address().port}`});
 let browser;
 try{
  const {payee,factory,customers,usdc}=app,[alice,bob,carol]=Object.keys(customers),vault=`acme.${factory}`,agent=`acme-agent.${factory}`;
@@ -157,6 +157,22 @@ try{
  await crow.getByRole('button',{name:'Review & pay'}).click();await cp.getByText('≈ $5.00').waitFor();await cp.getByRole('button',{name:'Pay 5 USDC'}).click();await ctoast('Paid from the vault.');
  assert.equal(await usdcBal(payee),5_000_000n);assert.equal(await usdcBal(cvault),95_000_000n);
  assert.equal((await (await cp.request.get(url+'/api/state')).json()).workspace.receipts[0].currency,'USDC');
+ // Cross-chain payout: a payee on Base, paid through a NEAR Intents deposit address only after the owner signs.
+ const evm='0x'+'ab'.repeat(20),xp=`base:${evm}`;
+ await cp.locator('nav [data-page="Controls"]').click();const xf=cp.locator('#external-form');await xf.getByLabel('Chain').selectOption('base');await xf.getByLabel('USDC address').fill(evm);await xf.getByLabel('Label').fill('Base designer');await xf.getByRole('button',{name:'Add payee'}).click();await ctoast('Cross-chain payee added');
+ assert.equal((await (await cp.request.post(url+'/api/action',{headers:{'X-PayGate':'1'},data:{action:'external-payee',payee:'base:0x123',allowed:true}})).json()).error,'Choose a chain and enter a valid address for it.');
+ await cp.locator('nav [data-page="Jobs"]').click();await cp.getByRole('button',{name:'Create job'}).click();await cp.locator('#payee-select').selectOption(xp);
+ await cp.getByLabel('Job title').fill('Bridge job');await cp.getByLabel('Brief',{exact:true}).fill('Paid on Base');await cp.getByLabel('Budget (USDC)').fill('4');await cp.locator('#job-form button[type=submit]').click();await cp.locator('#job-dialog').waitFor({state:'hidden'});
+ const xrow=cp.getByRole('row').filter({hasText:'Bridge job'});await xrow.getByRole('button',{name:'Record delivery'}).click();await cp.getByLabel('Delivery').fill('Done');await cp.getByRole('button',{name:'Save delivery'}).click();await ctoast('Delivery recorded');
+ await xrow.getByRole('button',{name:'Review & pay'}).click();await cp.getByRole('button',{name:'Request payment'}).click();await cp.getByText('Cross-chain payout of 4 USDC').waitFor();
+ assert.equal(await usdcBal(cvault),95_000_000n,'nothing moves before the owner signs');
+ await viaWallet(cp,()=>cp.getByRole('button',{name:'Approve in wallet'}).click());await ctoast('Payment approved and sent');
+ const deposit=stub.seen.deposits.at(-1),live=stub.seen.quotes.at(-1);
+ assert.equal(await usdcBal(deposit),4_000_000n);assert.equal(await usdcBal(cvault),91_000_000n);
+ assert.deepEqual([live.dry,live.originAsset,live.destinationAsset,live.recipient,live.refundTo,live.amount],[false,'nep141:'+usdc,'nep141:base-0x833589fcd6edb6e08f4c7c32d4f71b54bda02913.omft.near',evm,carol,'4000000']);
+ assert.ok(!(await provider.callFunction({contractId:cvault,method:'get_recipients',args:{},blockQuery:{finality:'optimistic'}})).includes(deposit),'deposit addresses never join the allowlist');
+ assert.equal(stub.seen.submitted.at(-1).depositAddress,deposit);
+ await cp.locator('nav [data-page="Evidence"]').click();await cp.getByText('Sent to Base via NEAR Intents').waitFor();await cp.getByRole('button',{name:'Check delivery'}).click();await cp.locator('.bridge-status').getByText('Delivered').waitFor();
  const carolBefore=await usdcBal(carol);await cp.locator('nav [data-page="Treasury"]').click();await cp.getByLabel('Amount (USDC)').fill('10');await viaWallet(cp,()=>cp.getByRole('button',{name:'Withdraw in wallet'}).click());
  await ctoast('Wallet transaction confirmed');assert.equal(await usdcBal(carol)-carolBefore,10_000_000n);
  // Forged sign-ins: someone else's signature for an account, and a nonce used twice.
@@ -170,5 +186,5 @@ try{
  await nav('Controls');await page.screenshot({path:'test-results/chain-controls.png',fullPage:true});
  await page.setViewportSize({width:390,height:844});await nav('Jobs');await page.screenshot({path:'test-results/chain-mobile.png',fullPage:true});assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
  assert.deepEqual(errors,[]);
- console.log('Chain checks passed: public pages, wallet sign-in, vault from the factory (keyless vault, restricted agent, owner on-chain), keys kept from the browser, payee labels, freeze, NEAR AI key, limit errors, agent delivery, USD quote, automatic and approved payments, rejection, receipts and transactions, forged approvals and injected results, limits, payees, withdrawal, signed webhook and Telegram alerts for held and paid payments, gas relayer (agent allowance untouched), agent API keys, REST and MCP payments within limits, a USDC vault (payee registration, deposit, payment, withdrawal), read-only and revoked keys, customer isolation, taken names, vault found on-chain without a hash, full refund of a large failed deposit, forged and replayed sign-ins, data deletion, mobile layout.');
+ console.log('Chain checks passed: public pages, wallet sign-in, vault from the factory (keyless vault, restricted agent, owner on-chain), keys kept from the browser, payee labels, freeze, NEAR AI key, limit errors, agent delivery, USD quote, automatic and approved payments, rejection, receipts and transactions, forged approvals and injected results, limits, payees, withdrawal, cross-chain USDC payout through NEAR Intents, signed webhook and Telegram alerts for held and paid payments, gas relayer (agent allowance untouched), agent API keys, REST and MCP payments within limits, a USDC vault (payee registration, deposit, payment, withdrawal), read-only and revoked keys, customer isolation, taken names, vault found on-chain without a hash, full refund of a large failed deposit, forged and replayed sign-ins, data deletion, mobile layout.');
 }finally{await browser?.close();await app.stop();await stub.close();receiver.close();tgApi.close()}

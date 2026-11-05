@@ -3,8 +3,8 @@ import {readFile,writeFile,mkdir} from 'node:fs/promises';
 import {randomBytes,createHash} from 'node:crypto';
 import {pathToFileURL} from 'node:url';
 import {KeyPair,decodeTransaction} from 'near-api-js';
-import {transition,verify,CLIENT_ACTIONS} from './domain.mjs';
-import {usdValue,attestation,deliver,integrations} from './near.mjs';
+import {transition,verify,external,CLIENT_ACTIONS} from './domain.mjs';
+import {usdValue,attestation,deliver,integrations,crossChainAssets,crossChainQuote,crossChainSubmit,crossChainStatus} from './near.mjs';
 import {vaultClient,factoryClient,verifySignIn,signNep413,accountFor,reason,toNear,toYocto,toUnits,isAccountId,NETWORKS,USDC,TOKEN_STORAGE} from './chain.mjs';
 import {openStore} from './store.mjs';
 import {sealer} from './secrets.mjs';
@@ -49,9 +49,13 @@ const relayer=env.PAYGATE_RELAYER_ACCOUNT?{accountId:env.PAYGATE_RELAYER_ACCOUNT
 const usdc=env.PAYGATE_USDC||USDC[network]||null;
 if(usdc&&!isAccountId(usdc))fail('PAYGATE_USDC is not a valid account.');
 // Only factories built with token support can create USDC vaults; older ones would silently create NEAR vaults.
-let factoryTokens=false;
+let factoryTokens=false,factoryExternal=false;
 const provider=(factory||factoryClient({rpcUrl,network,factory:'none',walletUrl})).provider;
-if(factory)factory.config().then(c=>{factoryTokens=c?.tokens===true}).catch(()=>{});
+if(factory)factory.config().then(c=>{factoryTokens=c?.tokens===true;factoryExternal=c?.external_payouts===true}).catch(()=>{});
+// Cross-chain payouts go through NEAR Intents 1Click, which works on mainnet only. PAYGATE_CROSSCHAIN=on or off overrides that.
+if(env.PAYGATE_CROSSCHAIN&&!['on','off'].includes(env.PAYGATE_CROSSCHAIN))fail('PAYGATE_CROSSCHAIN must be on or off.');
+const crossChainWanted=env.PAYGATE_CROSSCHAIN?env.PAYGATE_CROSSCHAIN==='on':network==='mainnet';
+const crossChain=v=>Boolean(crossChainWanted&&factoryExternal&&v?.token&&v.token===usdc);
 const explorer=NETWORKS[network]?.explorer||null;
 const hits=new Map(),SESSION_MS=7*864e5,MESSAGE='Sign in to PayGate';
 const ipOf=req=>(hosted&&String(req.headers['x-real-ip']||req.headers['x-forwarded-for']||'').split(',')[0].trim())||req.socket.remoteAddress;
@@ -83,7 +87,7 @@ const validName=n=>typeof n==='string'&&n.length>=2&&n.length<=32&&/^[a-z0-9](?:
 // What the browser sees of an account: never a key, sealed or not.
 async function snapshot(account){
  const r=await store.get(account),p=r?.profile||{};
- return {account,network,factory:factoryId||null,workspace:r?.workspace||null,vault:p.vault?{vault:p.vault.vault,agent:p.vault.agent,currency:p.vault.symbol||'NEAR',createdAt:p.vault.createdAt}:null,pending:p.pending?{name:p.pending.name}:null,aiKey:Boolean(p.aiKey),apiKeys:(p.apiKeys||[]).map(({hash,...k})=>k),alerts:{webhook:p.alerts?.webhook?.host||null,telegram:p.alerts?.telegram?.name||null,last:p.alerts?.last||null},createdAt:p.createdAt||null};
+ return {account,network,factory:factoryId||null,workspace:r?.workspace||null,vault:p.vault?{vault:p.vault.vault,agent:p.vault.agent,currency:p.vault.symbol||'NEAR',createdAt:p.vault.createdAt}:null,pending:p.pending?{name:p.pending.name}:null,aiKey:Boolean(p.aiKey),apiKeys:(p.apiKeys||[]).map(({hash,...k})=>k),externalPayees:p.externalPayees||[],alerts:{webhook:p.alerts?.webhook?.host||null,telegram:p.alerts?.telegram?.name||null,last:p.alerts?.last||null},createdAt:p.createdAt||null};
 }
 // Alerts: a customer's webhook and Telegram. Failures are recorded for the customer to see, never thrown at the action that caused them.
 const allowPrivate=network==='sandbox'&&env.PAYGATE_ALLOW_PRIVATE_WEBHOOKS==='1';
@@ -122,7 +126,7 @@ async function act(c,account,req){
  const j=workspace?.jobs.find(j=>j.id===c.id),key=j&&`${workspace.workspace}:${j.id}`;
  if(CLIENT_ACTIONS.includes(c.action)){
   if(c.action==='cancel'&&paying.has(key))throw Error('This payment is in progress. Wait for it to finish.');
-  if(c.action==='create'){need(v);const p=await v.policy();Object.assign(c,{allowed:await v.recipients(),max:p.limits.max,available:p.spendable})}
+  if(c.action==='create'){need(v);const p=await v.policy();Object.assign(c,{allowed:[...await v.recipients(),...(crossChain(v)?profile.externalPayees||[]:[])],max:p.limits.max,available:p.spendable})}
   return commit(c);
  }
  if(c.action==='run'){
@@ -136,6 +140,14 @@ async function act(c,account,req){
   need(v);if(!j)throw Error('Job not found.');if(j.status==='Awaiting approval')throw Error('This payment is waiting for your approval in your wallet.');if(j.status!=='Review')throw Error('Job must be awaiting review.');
   if((await v.policy()).frozen)throw Error('The vault is frozen. Unfreeze it in Controls first.');
   if(paying.has(key))throw Error('This payment is already in progress.');
+  // A payee on another chain is always approved by the owner, who signs the payout to a fresh NEAR Intents deposit address.
+  const x=external(j.payee);
+  if(x){
+   if(!crossChain(v))throw Error('Cross-chain payouts are not available on this PayGate.');
+   if(!(profile.externalPayees||[]).includes(j.payee))throw Error('That payee is no longer on your cross-chain list.');
+   alert(account,'payment.held',`PayGate: ${j.amount} ${v.symbol} to ${x.name} ${x.address} for "${j.title}" is waiting for your approval.`,{jobId:j.id,amount:j.amount,payee:j.payee});
+   return commit({action:'requested',id:j.id,payment:{network,vault:v.vault,currency:v.symbol,token:v.token,paymentId:null,amountUnits:v.units(j.amount),external:x}});
+  }
   paying.add(key);try{
    const r=await v.request(j,key),settlement={network,vault:v.vault,currency:v.symbol,token:v.token,paymentId:r.paymentId,amountUnits:r.amountYocto,requestTx:r.txHash};
    if(r.status==='sent'){alert(account,'payment.paid',`PayGate: paid ${j.amount} ${v.symbol} to ${j.payee} for "${j.title}".`,{jobId:j.id,amount:j.amount,payee:j.payee,txHash:r.txHash});return commit({action:'paid',id:j.id,settlement:{...settlement,route:'auto',txHash:r.txHash,explorer:v.explorer(r.txHash)}})}
@@ -145,6 +157,15 @@ async function act(c,account,req){
  }
  if(c.action==='confirm'){
   need(v);if(j?.status!=='Awaiting approval')throw Error('This job is not waiting for approval.');
+  if(j.payment.external){
+   const b=j.payment.bridge;if(!b)throw Error('Approve the payment first.');
+   const {outcome}=await v.confirmOwner(c.txHash,['pay_external'],a=>a?.job_id===key&&a?.recipient===b.depositAddress&&a?.amount===j.payment.amountUnits);
+   const id=v.sentId(outcome,key);
+   if(id==null||v.found(outcome,'payment_failed',id))throw Error('The payout did not reach NEAR Intents and the funds returned to the vault. Approve it again for a new quote.');
+   crossChainSubmit(c.txHash,b.depositAddress);
+   alert(account,'payment.paid',`PayGate: sent ${j.amount} ${v.symbol} to ${j.payment.external.name} ${j.payment.external.address} for "${j.title}" through NEAR Intents.`,{jobId:j.id,amount:j.amount,payee:j.payee,txHash:c.txHash});
+   return commit({action:'paid',id:j.id,settlement:{...j.payment,paymentId:id,route:'cross-chain',txHash:c.txHash,explorer:v.explorer(c.txHash)}});
+  }
   const {outcome,method}=await v.confirmOwner(c.txHash,['approve_payment','reject_payment'],a=>a?.id===j.payment.paymentId);
   if(method==='reject_payment')return commit({action:'released',id:j.id});
   if(v.found(outcome,'payment_failed',j.payment.paymentId))throw Error(`The transfer to ${j.payee} failed and the funds returned to the vault. Check that the account exists.`);
@@ -152,6 +173,14 @@ async function act(c,account,req){
  }
  if(c.action==='owner'){
   need(v);const link=(method,args)=>v.ownerLink(method,args,callbackFor(req));
+  if((c.kind==='approve'||c.kind==='reject')&&j?.status==='Awaiting approval'&&j.payment?.external){
+   // Nothing is held on-chain for a cross-chain payee, so rejecting needs no wallet. Approving fetches a fresh quote.
+   if(c.kind==='reject')return commit({action:'released',id:j.id});
+   if(!crossChain(v))throw Error('Cross-chain payouts are not available on this PayGate.');
+   const x=j.payment.external,bridge=await crossChainQuote({originAsset:v.token,amountUnits:j.payment.amountUnits,chain:x.chain,address:x.address,refundTo:account});
+   await commit({action:'bridge-quote',id:j.id,bridge});
+   return {...await link('pay_external',{recipient:bridge.depositAddress,amount:j.payment.amountUnits,job_id:key}),bridge};
+  }
   if(c.kind==='approve'||c.kind==='reject'){if(j?.status!=='Awaiting approval')throw Error('This job is not waiting for approval.');return link(c.kind+'_payment',{id:j.payment.paymentId})}
   if(c.kind==='freeze'){if(typeof c.frozen!=='boolean')throw Error('Invalid freeze state.');return link('set_frozen',{frozen:c.frozen})}
   if(c.kind==='payee'){if(!isAccountId(c.account))throw Error('Enter a valid NEAR account, such as name.near.');if(typeof c.allowed!=='boolean')throw Error('Invalid payee change.');return link('set_recipient',{recipient:c.account,allowed:c.allowed})}
@@ -206,6 +235,18 @@ async function act(c,account,req){
   const code=randomBytes(18).toString('base64url');tgCodes.set(code,{account,until:Date.now()+6e5});
   for(const [k,v] of tgCodes)if(v.until<Date.now())tgCodes.delete(k);
   return {...await snapshot(account),telegramLink:`https://t.me/${tgBot}?start=${code}`};
+ }
+ if(c.action==='external-payee'){
+  need(v);if(!crossChain(v))throw Error('Cross-chain payouts are not available on this PayGate.');
+  const x=external(c.payee);if(!x)throw Error('Choose a chain and enter a valid address for it.');
+  const p=`${x.chain}:${x.address}`,list=profile.externalPayees||[];
+  if(c.allowed===false){await setProfile(y=>({...y,externalPayees:list.filter(e=>e!==p)}));return snapshot(account)}
+  if(list.length>=20&&!list.includes(p))throw Error('You can add at most 20 cross-chain payees.');
+  await setProfile(y=>({...y,externalPayees:[...new Set([...list,p])]}));return snapshot(account);
+ }
+ if(c.action==='bridge-status'){
+  const r=workspace?.receipts.find(r=>r.jobId===c.id),b=r?.settlement?.bridge||j?.payment?.bridge;if(!b)throw Error('This payment did not go through NEAR Intents.');
+  return {...await snapshot(account),bridgeStatus:{jobId:c.id,...await crossChainStatus(b.depositAddress)}};
  }
  if(c.action==='alerts-test'){if(!profile.alerts?.webhook&&!profile.alerts?.telegram)throw Error('Connect a webhook or Telegram first.');await notify(account,'alerts.test','PayGate test alert: this is how payment approvals will reach you.');return snapshot(account)}
  if(c.action==='ai-key'){
@@ -263,7 +304,7 @@ async function agentCall(account,key,name,a={}){
  const job=async id=>{const w=(await snapshot(account)).workspace,j=w?.jobs.find(j=>j.id===id);if(!j)throw Error('Job not found.');return view(w,j)};
  const run=async(c,id)=>{const s=await act(c,account,{headers:{}});return id?view(s.workspace,s.workspace.jobs.find(j=>j.id===id)):s};
  if(name==='get_vault'){const r=await store.get(account),v=vaultFor(account,r?.profile||{});if(!v)return {configured:false,message:'The owner has not created a vault yet.'};const view=await vaultView(v);const w=r.workspace;return {...view,payees:view.recipients.map(a=>({account:a,label:w.payees[a]||null})),committed:w.jobs.filter(j=>['Working','Review','Awaiting approval'].includes(j.status)).reduce((s,j)=>s+j.amount,0)}}
- if(name==='list_payees'){const r=await store.get(account),v=vaultFor(account,r?.profile||{});if(!v)return [];return (await v.recipients()).map(a=>({account:a,label:r.workspace.payees[a]||null}))}
+ if(name==='list_payees'){const r=await store.get(account),v=vaultFor(account,r?.profile||{});if(!v)return [];return [...(await v.recipients()).map(a=>({account:a,label:r.workspace.payees[a]||null})),...(crossChain(v)?r.profile.externalPayees||[]:[]).map(a=>({account:a,label:r.workspace.payees[a]||null,crossChain:true,chain:external(a).name}))]}
  if(name==='list_jobs'){const w=(await snapshot(account)).workspace;return w.jobs.filter(j=>!a.status||j.status===a.status).slice(0,100).map(j=>view(w,j))}
  if(name==='get_job')return job(a.id);
  if(name==='create_job'){const s=await run({action:'create',title:a.title,brief:a.brief,payee:a.payee,amount:typeof a.amount==='string'?Number(a.amount):a.amount});return view(s.workspace,s.workspace.jobs[0])}
@@ -274,7 +315,7 @@ async function agentCall(account,key,name,a={}){
 }
 const TOOLS=[
  {name:'get_vault',description:'Read the vault: spendable balance in NEAR, limits (automatic, per payment, daily), today\'s spending, whether it is frozen, its payees and the budget already committed to open jobs.',inputSchema:{type:'object',properties:{}}},
- {name:'list_payees',description:'List the accounts the vault may pay, with their labels. Payments to any other account are refused by the vault.',inputSchema:{type:'object',properties:{}}},
+ {name:'list_payees',description:'List the accounts the vault may pay, with their labels. Payments to any other account are refused by the vault. Entries marked crossChain are addresses on other chains, written chain:address; their payments always wait for the owner to approve them.',inputSchema:{type:'object',properties:{}}},
  {name:'list_jobs',description:'List jobs, newest first. Optionally filter by status: Working, Review, Awaiting approval, Paid or Cancelled.',inputSchema:{type:'object',properties:{status:{type:'string',enum:['Working','Review','Awaiting approval','Paid','Cancelled']}}}},
  {name:'get_job',description:'Get one job, its delivery, and its payment or receipt.',inputSchema:{type:'object',properties:{id:{type:'string'}},required:['id']}},
  {name:'create_job',description:'Create a job for an allowlisted payee with a budget in NEAR (at most 4 decimals). The budget must fit the per-payment limit and the balance not committed to other open jobs.',inputSchema:{type:'object',properties:{title:{type:'string',maxLength:100},brief:{type:'string',maxLength:2000},payee:{type:'string',description:'NEAR account on the allowlist'},amount:{type:'number',minimum:0.0001}},required:['title','brief','payee','amount']}},
@@ -322,7 +363,7 @@ if(tg&&path===tgPath&&req.method==='POST'){if(req.headers['x-telegram-bot-api-se
 if(path.startsWith('/dev-wallet/')&&req.method==='GET'){if(await devWallet(url,req,res))return;return json(404,{error:'Not found.'})}
 if(path.startsWith('/api/v1/')||path==='/mcp')return agentApi(url,req,res,json,body,ip);
 if(path.startsWith('/api/')&&req.method==='POST'&&(req.headers['x-paygate']!=='1'||(req.headers.origin&&!origins.includes(req.headers.origin))))return json(403,{error:'Request origin rejected.'});
-if(path==='/api/config'&&req.method==='GET')return json(200,{network,factory:factoryId||null,ready:Boolean(factoryId),walletUrl,rpcUrl:NETWORKS[network]?.rpcUrl||null,explorer,minDeposit:0.4,telegram:Boolean(tgBot),usdc:Boolean(usdc&&factoryTokens)});
+if(path==='/api/config'&&req.method==='GET')return json(200,{network,factory:factoryId||null,ready:Boolean(factoryId),walletUrl,rpcUrl:NETWORKS[network]?.rpcUrl||null,explorer,minDeposit:0.4,telegram:Boolean(tgBot),usdc:Boolean(usdc&&factoryTokens),crossChain:Boolean(crossChainWanted&&factoryExternal&&usdc),chains:crossChainWanted&&factoryExternal&&usdc?await crossChainAssets().then(a=>a.map(({chain,name})=>({chain,name}))).catch(()=>[]):[]});
 if(path==='/api/session'&&req.method==='GET')return json(200,{account:await signedIn(req)});
 if(path==='/api/auth/challenge'&&req.method==='POST'){
  if(limited('challenge '+ip,30,6e5))return json(429,{error:'Too many sign-in attempts. Try again in a few minutes.'});

@@ -65,6 +65,15 @@ npm run dev:chain</code></pre>
 <li>In <b>Treasury</b>, <b>Deposit USDC</b>. Your wallet sends USDC to the vault with <code>ft_transfer_call</code>, and registers the vault with USDC if needed.</li>
 <li>Pay jobs as usual. Receipts and alerts show USDC, and withdrawals return USDC to you.</li></ol>
 <p>The vault keeps its own ledger of USDC: it counts only deposits from the USDC contract itself, so tokens sent another way, or other tokens, are not spendable. On mainnet PayGate uses Circle's native USDC; on testnet, Circle's testnet USDC from Circle's faucet.</p>`},
+{id:'cross-chain',title:'Cross-chain payouts',html:`
+<p class="eyebrow">Using PayGate</p><h1>Cross-chain payouts</h1>
+<p class="lead">Pay people who want USDC on Base, Arbitrum, Ethereum, Optimism, Polygon, Avalanche or Solana, straight from a USDC vault.</p>
+<ol><li>In <b>Controls → Payees on other chains</b>, choose the chain and paste the payee's USDC address. This list is kept by PayGate; only you can change it, and agent API keys cannot.</li>
+<li>Create jobs for that payee as usual. When the agent or you request payment, nothing moves: cross-chain payouts always wait for you.</li>
+<li>Select <b>Approve in wallet</b>. PayGate asks NEAR Intents 1Click for a live quote, which comes with a one-time NEAR deposit address. Your wallet signs <code>pay_external</code> on your vault, which registers that address with USDC and sends it the payment. 1Click then delivers USDC to the payee's address on the other chain.</li>
+<li>In <b>Evidence</b>, <b>Check delivery</b> shows the 1Click status and the transaction on the destination chain.</li></ol>
+<p>The vault still enforces its per-payment and daily limits, the freeze switch and one payment per job, and only your account can call <code>pay_external</code>. If the swap cannot complete, 1Click refunds the USDC to your own NEAR account, not to the vault. Each payout spends 0.00125 NEAR of the vault's NEAR to register the deposit address, so keep a little NEAR in the vault.</p>
+<p>Trust: the destination address you see in PayGate is what the quote is requested for, but your wallet shows only the deposit address. You can check any deposit address on the 1Click explorer before signing. NEAR Intents runs on mainnet only, so cross-chain payouts are off on testnet.</p>`},
 {id:'agent-api',title:'Agent API and MCP',html:`
 <p class="eyebrow">For agents</p><h1>Agent API and MCP</h1>
 <p class="lead">Your own AI agent can use PayGate directly: read the vault, create jobs, deliver work and request payment. The vault's rules apply exactly as they do to you in the dashboard.</p>
@@ -141,7 +150,7 @@ curl -X POST $BASE/jobs/PG-1a2b3c4d/pay -H "Authorization: Bearer $KEY"</code></
 <p class="eyebrow">Operate</p><h1>Run your own PayGate</h1>
 <p class="lead">For operators. Customers do not need any of this: they sign in and create a vault.</p>
 <h2>1. Deploy the platform</h2>
-<p>Run once from your own machine with an operator account. It publishes the vault code as a global contract pinned by hash, so every customer vault runs exactly that code, and deploys the factory, which ends with no keys. Publishing burns about 23.4 NEAR and the factory code locks about 1.8 NEAR, so fund it with 28 NEAR. Without the confirmation flag it only prints a summary.</p>
+<p>Run once from your own machine with an operator account. It publishes the vault code as a global contract pinned by hash, so every customer vault runs exactly that code, and deploys the factory, which ends with no keys. Publishing burns about 23.8 NEAR and the factory code locks about 1.8 NEAR, so fund it with 28 NEAR. Without the confirmation flag it only prints a summary.</p>
 <pre><code>NEAR_NETWORK=mainnet NEAR_OPERATOR_ACCOUNT=you.near NEAR_OPERATOR_KEY=ed25519:... \\
 npm run platform:deploy</code></pre>
 <p>Run it again with <code>-- --yes-mainnet</code> to deploy. It prints the <code>PAYGATE_FACTORY</code> value for your server.</p>

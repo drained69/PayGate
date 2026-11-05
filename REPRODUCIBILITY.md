@@ -28,20 +28,20 @@ Requires Node.js 22.22.2 or later. Run `npm install`, then `npm run dev:chain`, 
 
 ## Integration notes
 
-- **NEAR Intents.** Quotes are always `dry`, so 1Click returns no deposit address and no swap can happen. They price NEAR in USDC on NEAR.
+- **NEAR Intents.** Dollar values use `dry` quotes, so 1Click returns no deposit address and no swap can happen. Cross-chain payouts (mainnet only, or `PAYGATE_CROSSCHAIN=on`) request a live quote when the owner approves; its deposit address is paid by the owner-signed `pay_external`, and refunds go to the owner's account. Local checks use a stand-in 1Click.
 - **Attestation.** The check reads the TDX quote directly and confirms its format, nonce binding and gateway configuration measurement. It does not verify Intel's signature or replay the RTMR3 event log.
 - **Wallets.** On testnet and mainnet, wallets connect through NEAR Connect (`public/vendor/near-connect.js`, bundled from `@hot-labs/near-connect` 0.12.0). Each wallet's code is fetched from the NEAR Connect wallet list and runs in a sandboxed iframe without same-origin access. The page's Content Security Policy allows inline code only with a per-response nonce, and allows wallets to reach their own services over https. Sign-in signs the NEP-413 message while connecting. Owner actions are sent to the wallet as transactions, and their hashes are checked on-chain. On a local node, a stand-in wallet signs through `/wallet-callback.html` instead.
 
 ## Rebuilding the contracts
 
-`contract/res/paygate_vault.wasm` and `contract/res/paygate_factory.wasm` are committed, so no Rust toolchain is needed. To rebuild them, run `cargo build --release --target wasm32-unknown-unknown` in `contract/` and in `contract/factory/`, and copy each output to `contract/res/`. The build needs the `--cfg near` flag in `contract/.cargo/config.toml`, because `near-sdk` otherwise drops every contract panic message. The contracts need nearcore 2.14 or later, so the sandbox is pinned to 2.14.0. Publishing the vault code as a global contract burns ten times the normal storage cost, about 23.4 NEAR. `scripts/fixtures/test-usdc.wasm` is a test-only USDC built from `contract/test-token` for local nodes.
+`contract/res/paygate_vault.wasm` and `contract/res/paygate_factory.wasm` are committed, so no Rust toolchain is needed. To rebuild them, run `cargo build --release --target wasm32-unknown-unknown` in `contract/` and in `contract/factory/`, and copy each output to `contract/res/`. The build needs the `--cfg near` flag in `contract/.cargo/config.toml`, because `near-sdk` otherwise drops every contract panic message. The contracts need nearcore 2.14 or later, so the sandbox is pinned to 2.14.0. Publishing the vault code as a global contract burns ten times the normal storage cost, about 23.8 NEAR. `scripts/fixtures/test-usdc.wasm` is a test-only USDC built from `contract/test-token` for local nodes.
 
 ## Verification
 
 | Command | Covers |
 | --- | --- |
 | `npm test` | Domain, NEAR services, encryption, NEP-413, server security and the file store, offline |
-| `cd contract && cargo test` | 26 vault tests, including USDC |
+| `cd contract && cargo test` | 30 vault tests, including USDC and external payouts |
 | `cd contract/factory && cargo test` | 5 factory tests |
 | `npm run test:postgres` | The store against real Postgres, in Docker or at `DATABASE_URL` |
 | `npm run test:browser` | The public site and the sign-in hand-off |

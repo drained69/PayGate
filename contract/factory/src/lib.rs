@@ -33,6 +33,8 @@ pub struct Config {
     pub min_deposit: NearToken,
     /// True when vaults can hold a NEP-141 token such as USDC.
     pub tokens: bool,
+    /// True when token vaults can pay an owner-confirmed address, such as a NEAR Intents deposit address.
+    pub external_payouts: bool,
 }
 
 #[near(event_json(standard = "paygate_factory"))]
@@ -139,6 +141,7 @@ impl Factory {
             agent_fund: AGENT_FUND,
             min_deposit: MIN_VAULT_FUND.saturating_add(AGENT_FUND),
             tokens: true,
+            external_payouts: true,
         }
     }
 }

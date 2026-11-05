@@ -16,6 +16,9 @@ const MAX_REQUESTS_PER_WINDOW: u32 = 50;
 const MAX_JOB_ID_LEN: usize = 64;
 const CALLBACK_GAS: Gas = Gas::from_tgas(5);
 const FT_TRANSFER_GAS: Gas = Gas::from_tgas(15);
+const STORAGE_DEPOSIT_GAS: Gas = Gas::from_tgas(10);
+/// NEP-145 registration for one account on a token such as USDC; any excess is refunded by the token.
+const TOKEN_STORAGE: NearToken = NearToken::from_yoctonear(1_250_000_000_000_000_000_000);
 
 #[near(serializers = [json, borsh])]
 #[derive(Clone)]
@@ -192,6 +195,27 @@ impl Vault {
         self.pay(payment);
     }
 
+    /// Owner-signed payment to an address the owner confirms in their wallet, such as a NEAR Intents
+    /// deposit address that forwards to a payee on another chain. Token vaults only. The vault registers
+    /// the address with the token first, and the payment counts against the same limits as any other.
+    #[payable]
+    pub fn pay_external(&mut self, recipient: AccountId, amount: NearToken, job_id: String) -> RequestResult {
+        self.assert_owner();
+        require!(self.token.is_some(), "External payments need a token vault");
+        require!(!self.frozen, "Payments are frozen");
+        require!(!amount.is_zero(), "Amount must be positive");
+        require!(amount <= self.limits.max_payment, "Amount exceeds the per-payment limit");
+        require!(!job_id.is_empty() && job_id.len() <= MAX_JOB_ID_LEN, "Invalid job id");
+        require!(!self.used_jobs.contains(&job_id), "Job has already been paid or requested");
+        require!(self.free_near() >= TOKEN_STORAGE, "The vault needs a little NEAR to register the address");
+        self.roll_window();
+        self.used_jobs.insert(job_id.clone());
+        let id = self.next_id;
+        self.next_id += 1;
+        self.pay_with(Payment { id, recipient, amount, job_id }, true);
+        RequestResult { id, status: "sent".into() }
+    }
+
     #[payable]
     pub fn reject_payment(&mut self, id: u64) {
         self.assert_owner();
@@ -320,10 +344,18 @@ impl Vault {
         if self.token.is_some() {
             return NearToken::from_yoctonear(self.token_balance);
         }
+        self.free_near()
+    }
+
+    fn free_near(&self) -> NearToken {
         env::account_balance().saturating_sub(env::storage_byte_cost().saturating_mul(env::storage_usage() as u128))
     }
 
     fn pay(&mut self, payment: Payment) {
+        self.pay_with(payment, false)
+    }
+
+    fn pay_with(&mut self, payment: Payment, register: bool) {
         let Payment { id, recipient, amount, job_id } = payment;
         let spent = self.spent_in_window.saturating_add(amount);
         require!(spent <= self.limits.daily_limit, "Amount exceeds the daily limit");
@@ -334,7 +366,14 @@ impl Vault {
             None => Promise::new(recipient).transfer(amount),
             Some(token) => {
                 self.token_balance -= amount.as_yoctonear();
-                ft_transfer(token, recipient, amount, job_id.clone())
+                if register {
+                    let args = json!({ "account_id": recipient, "registration_only": true });
+                    Promise::new(token.clone())
+                        .function_call("storage_deposit", args.to_string().into_bytes(), TOKEN_STORAGE, STORAGE_DEPOSIT_GAS)
+                        .then(ft_transfer(token, recipient, amount, job_id.clone()))
+                } else {
+                    ft_transfer(token, recipient, amount, job_id.clone())
+                }
             }
         };
         transfer.then(
@@ -664,6 +703,46 @@ mod tests {
         call("vault.near", 0);
         v.on_withdraw(usdc(40), Err(PromiseError::Failed));
         assert_eq!(v.get_policy().balance, usdc(100));
+    }
+
+    #[test]
+    fn external_payments_are_owner_only_and_follow_the_limits() {
+        let mut v = token_vault();
+        call("owner.near", 1);
+        let deposit = acct(&"ab".repeat(32));
+        assert_eq!(v.pay_external(deposit.clone(), usdc(30), "x".into()).status, "sent");
+        assert_eq!(v.get_policy().balance, usdc(70));
+        assert_eq!(v.get_policy().spent_in_window, usdc(30));
+        assert!(!v.get_recipients().contains(&deposit), "the deposit address is never allowlisted");
+        call("vault.near", 0);
+        v.on_payout(1, usdc(30), "x".into(), v.window_start_ms, Err(PromiseError::Failed));
+        assert_eq!(v.get_policy().balance, usdc(100));
+        call("owner.near", 1);
+        assert_eq!(v.pay_external(deposit, usdc(30), "x".into()).status, "sent", "a failed job can be paid again");
+    }
+
+    #[test]
+    #[should_panic(expected = "Only the owner")]
+    fn the_agent_cannot_pay_external_addresses() {
+        let mut v = token_vault();
+        call("agent.near", 1);
+        v.pay_external(acct("anyone.near"), usdc(1), "x".into());
+    }
+
+    #[test]
+    #[should_panic(expected = "Amount exceeds the per-payment limit")]
+    fn external_payments_respect_the_per_payment_limit() {
+        let mut v = token_vault();
+        call("owner.near", 1);
+        v.pay_external(acct("anyone.near"), usdc(51), "x".into());
+    }
+
+    #[test]
+    #[should_panic(expected = "External payments need a token vault")]
+    fn external_payments_need_a_token_vault() {
+        let mut v = vault();
+        call("owner.near", 1);
+        v.pay_external(acct("anyone.near"), near(1), "x".into());
     }
 
     #[test]

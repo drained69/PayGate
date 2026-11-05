@@ -16,6 +16,34 @@ export async function usdValue(job){
  if(!q?.amountOutFormatted)throw Error('NEAR Intents returned no quote.');
  return {source:'NEAR Intents 1Click',usd:Number(q.amountInUsd||q.amountOutUsd||q.amountOutFormatted),usdc:q.amountOutFormatted,correlationId,quotedAt:timestamp};
 }
+// Cross-chain payouts: a USDC vault pays a NEAR Intents deposit address, and 1Click delivers USDC to the payee's
+// address on another chain. Only these chains are offered; their USDC asset IDs are read from 1Click itself.
+export const CHAINS={base:{name:'Base',family:'evm'},arb:{name:'Arbitrum',family:'evm'},eth:{name:'Ethereum',family:'evm'},op:{name:'Optimism',family:'evm'},pol:{name:'Polygon',family:'evm'},avax:{name:'Avalanche',family:'evm'},sol:{name:'Solana',family:'sol'}};
+const jwt=()=>env.ONECLICK_JWT?{Authorization:'Bearer '+env.ONECLICK_JWT}:{};
+let assets=null;
+export async function crossChainAssets(){
+ if(assets&&assets.until>Date.now())return assets.list;
+ const r=await request(oneClick()+'/tokens',{headers:{Accept:'application/json'}},15000,'NEAR Intents');
+ const list=(await r.json()).filter(t=>t.symbol==='USDC'&&CHAINS[t.blockchain]).map(t=>({chain:t.blockchain,name:CHAINS[t.blockchain].name,assetId:t.assetId,decimals:t.decimals}));
+ assets={list,until:Date.now()+36e5};return list;
+}
+// A live quote with a deposit address. Unfilled or failed swaps refund to the vault owner's NEAR account, because
+// a plain token transfer back to the vault would not be counted by its ledger.
+export async function crossChainQuote({originAsset,amountUnits,chain,address,refundTo,minutes=30}){
+ const asset=(await crossChainAssets()).find(a=>a.chain===chain);if(!asset)throw Error('NEAR Intents does not offer USDC on that chain right now.');
+ const r=await request(oneClick()+'/quote',{method:'POST',headers:{'Content-Type':'application/json',...jwt()},body:JSON.stringify({dry:false,swapType:'EXACT_INPUT',slippageTolerance:100,originAsset:'nep141:'+originAsset,depositType:'ORIGIN_CHAIN',destinationAsset:asset.assetId,amount:String(amountUnits),refundTo,refundType:'ORIGIN_CHAIN',recipient:address,recipientType:'DESTINATION_CHAIN',deadline:new Date(Date.now()+minutes*6e4).toISOString(),referral:'paygate'})},20000,'NEAR Intents');
+ const {quote:q,correlationId,timestamp}=await r.json();
+ if(!q?.depositAddress||!/^[0-9a-f]{64}$/.test(q.depositAddress))throw Error('NEAR Intents returned no NEAR deposit address.');
+ if(q.amountIn&&q.amountIn!==String(amountUnits))throw Error('NEAR Intents quoted a different amount.');
+ return {depositAddress:q.depositAddress,amountOut:q.amountOutFormatted,minAmountOut:q.minAmountOut,deadline:q.deadline,timeEstimate:q.timeEstimate,correlationId,quotedAt:timestamp,chain,address,refundTo};
+}
+export async function crossChainSubmit(txHash,depositAddress){await fetch(oneClick()+'/deposit/submit',{method:'POST',headers:{'Content-Type':'application/json',...jwt()},body:JSON.stringify({txHash,depositAddress}),signal:AbortSignal.timeout(10000)}).catch(()=>{})}
+export async function crossChainStatus(depositAddress){
+ const url=new URL(oneClick()+'/status');url.search=new URLSearchParams({depositAddress});
+ const d=await (await request(url,{headers:{Accept:'application/json',...jwt()}},15000,'NEAR Intents')).json();
+ const tx=d.swapDetails?.destinationChainTxHashes?.[0];
+ return {status:d.status||'UNKNOWN',destinationTx:tx?.hash||null,destinationExplorer:/^https:\/\//.test(tx?.explorerUrl||'')?tx.explorerUrl:null,amountOut:d.swapDetails?.amountOutFormatted||null,checkedAt:new Date().toISOString()};
+}
 // Reads the TDX quote directly, because the JSON fields around it are only copies. Offsets: 48-byte header, then MRCONFIGID at +184 and REPORTDATA at +520 of the report body.
 export function checkReport(report,nonce){
  const g=report.gateway_attestation,quoteBytes=Buffer.from(g?.intel_quote||'','hex');
