@@ -5,10 +5,19 @@ import {JsonRpcProvider,KeyPair,decodeTransaction} from 'near-api-js';
 import {toYocto,signNep413,accountFor} from '../chain.mjs';
 import {startChainApp} from './dev-chain.mjs';
 import {startStub} from './near-stub.mjs';
+import http from 'node:http';
+import {createHmac} from 'node:crypto';
+// A local webhook receiver and a stand-in Telegram Bot API, so alerts can be checked end to end.
+const hooks=[],tgSent=[],tgUpdates=[];
+const receiver=http.createServer(async(req,res)=>{let b='';for await(const c of req)b+=c;hooks.push({headers:req.headers,body:b});res.writeHead(200);res.end('ok')});
+const tgApi=http.createServer(async(req,res)=>{let b='';for await(const c of req)b+=c;const p=b?JSON.parse(b):{},m=req.url.split('/').pop(),send=r=>{res.writeHead(200,{'Content-Type':'application/json'});res.end(JSON.stringify({ok:true,result:r}))};
+ if(m==='getMe')return send({username:'paygate_test_bot'});if(m==='sendMessage'){tgSent.push(p);return send({})}if(m==='getUpdates'){await new Promise(d=>setTimeout(d,300));return send(tgUpdates.splice(0).filter(u=>u.update_id>=(p.offset||0)))}send(true)});
+await new Promise(r=>receiver.listen(0,'127.0.0.1',r));await new Promise(r=>tgApi.listen(0,'127.0.0.1',r));
+const hookUrl=`http://127.0.0.1:${receiver.address().port}/paygate`;
 // The public product end to end on a local NEAR node: wallet sign-in, a vault from the factory, payments,
 // approvals and controls, through the same pop-up flow a real wallet uses. A second customer checks isolation.
 const stub=await startStub(),port=3097,url=`http://localhost:${port}`;
-const app=await startChainApp(port,{ONECLICK_URL:stub.url,NEAR_AI_URL:stub.url});
+const app=await startChainApp(port,{ONECLICK_URL:stub.url,NEAR_AI_URL:stub.url,PAYGATE_ALLOW_PRIVATE_WEBHOOKS:'1',TELEGRAM_BOT_TOKEN:'123:test',TELEGRAM_API_URL:`http://127.0.0.1:${tgApi.address().port}`});
 let browser;
 try{
  const {payee,factory,customers}=app,[alice,bob]=Object.keys(customers),vault=`acme.${factory}`,agent=`acme-agent.${factory}`;
@@ -41,6 +50,16 @@ try{
  await nav('Controls');await page.locator(`form[data-account="${payee}"] input`).fill('Research contractor');await page.locator(`form[data-account="${payee}"] button`).click();await toast('Label saved.');
  await viaWallet(page,()=>page.getByRole('button',{name:'Freeze in wallet'}).click());await page.getByText('Vault status: Frozen').waitFor();
  await nav('Settings');await page.getByLabel('API key').fill('test-key-paygate');await page.getByRole('button',{name:'Save key'}).click();await toast('NEAR AI key saved.');
+ // Alerts: a webhook gets a signed test message on connect, and Telegram links through the bot's /start code.
+ await page.getByLabel('Webhook URL').fill(hookUrl);await page.locator('#webhook-form').getByRole('button',{name:'Connect'}).click();
+ const signing=(await page.locator('#key-dialog[open] #new-key').textContent()).trim();await page.locator('#key-dialog .close').click();
+ const verified=h=>h.headers['x-paygate-signature']==='sha256='+createHmac('sha256',signing).update(h.body).digest('hex');
+ assert.equal(hooks.length,1);assert.equal(hooks[0].headers['x-paygate-event'],'alerts.test');assert.ok(verified(hooks[0]));
+ await page.getByRole('button',{name:'Connect Telegram'}).click();const tgLink=await page.getByRole('link',{name:'Open the PayGate bot'}).getAttribute('href');
+ assert.match(tgLink,/^https:\/\/t\.me\/paygate_test_bot\?start=/);
+ tgUpdates.push({update_id:1,message:{chat:{id:4242,username:'drained'},text:'/start '+new URL(tgLink).searchParams.get('start')}});
+ for(let i=0;i<40&&!tgSent.some(m=>m.chat_id===4242);i++)await new Promise(d=>setTimeout(d,250));
+ await page.reload();await nav('Settings');await page.getByText('Connected to drained').waitFor();
  const create=async(title,amount)=>{await nav('Jobs');await page.getByRole('button',{name:'Create job'}).click();await page.getByLabel('Job title').fill(title);await page.getByLabel('Brief',{exact:true}).fill('Summarize three competitor pricing pages');await page.getByLabel('Payee').selectOption(payee);await page.getByLabel('Budget (NEAR)').fill(String(amount));await page.locator('#job-form button[type=submit]').click()};
  await create('Too large',0.6);await page.locator('#form-error').getByText('per-payment limit of 0.5 NEAR').waitFor();await page.locator('#job-dialog .close').click();
  await create('Small job',0.05);await page.locator('#job-dialog').waitFor({state:'hidden'});
@@ -56,6 +75,10 @@ try{
  await row('Large job').getByRole('button',{name:'Review & pay'}).click();await page.locator('#review-dialog').getByText('Recorded by owner').waitFor();await page.getByRole('button',{name:'Request payment'}).click();
  await viaWallet(page,()=>page.getByRole('button',{name:'Approve in wallet'}).click());await toast('Payment approved and sent.');
  assert.equal(await balance(payee)-start,BigInt(toYocto(0.35)));
+ const waitFor=async test=>{for(let i=0;i<40&&!test();i++)await new Promise(d=>setTimeout(d,250));assert.ok(test())};
+ await waitFor(()=>hooks.some(h=>h.headers['x-paygate-event']==='payment.held'&&verified(h)&&JSON.parse(h.body).data.jobId));
+ await waitFor(()=>hooks.some(h=>h.headers['x-paygate-event']==='payment.paid'));
+ await waitFor(()=>tgSent.some(m=>m.chat_id===4242&&/waiting for your approval/.test(m.text)&&/\?job=PG-/.test(m.text)));
  await create('Rejected job',0.2);await page.locator('#job-dialog').waitFor({state:'hidden'});await row('Rejected job').getByRole('button',{name:'Record delivery'}).click();await page.getByLabel('Delivery').fill('Draft');await page.getByRole('button',{name:'Save delivery'}).click();await toast('Delivery recorded');
  await row('Rejected job').getByRole('button',{name:'Review & pay'}).click();await page.getByRole('button',{name:'Request payment'}).click();await viaWallet(page,()=>page.getByRole('button',{name:'Reject in wallet'}).click());await toast('Payment rejected');
  await row('Rejected job').getByText('Review',{exact:true}).waitFor();assert.equal(await balance(payee)-start,BigInt(toYocto(0.35)));
@@ -126,5 +149,5 @@ try{
  await nav('Controls');await page.screenshot({path:'test-results/chain-controls.png',fullPage:true});
  await page.setViewportSize({width:390,height:844});await nav('Jobs');await page.screenshot({path:'test-results/chain-mobile.png',fullPage:true});assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
  assert.deepEqual(errors,[]);
- console.log('Chain checks passed: public pages, wallet sign-in, vault from the factory (keyless vault, restricted agent, owner on-chain), keys kept from the browser, payee labels, freeze, NEAR AI key, limit errors, agent delivery, USD quote, automatic and approved payments, rejection, receipts and transactions, forged approvals and injected results, limits, payees, withdrawal, agent API keys, REST and MCP payments within limits, read-only and revoked keys, customer isolation, taken names, vault found on-chain without a hash, full refund of a large failed deposit, forged and replayed sign-ins, data deletion, mobile layout.');
-}finally{await browser?.close();await app.stop();await stub.close()}
+ console.log('Chain checks passed: public pages, wallet sign-in, vault from the factory (keyless vault, restricted agent, owner on-chain), keys kept from the browser, payee labels, freeze, NEAR AI key, limit errors, agent delivery, USD quote, automatic and approved payments, rejection, receipts and transactions, forged approvals and injected results, limits, payees, withdrawal, signed webhook and Telegram alerts for held and paid payments, agent API keys, REST and MCP payments within limits, read-only and revoked keys, customer isolation, taken names, vault found on-chain without a hash, full refund of a large failed deposit, forged and replayed sign-ins, data deletion, mobile layout.');
+}finally{await browser?.close();await app.stop();await stub.close();receiver.close();tgApi.close()}

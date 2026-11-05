@@ -8,6 +8,7 @@ import {usdValue,attestation,deliver,integrations} from './near.mjs';
 import {vaultClient,factoryClient,verifySignIn,signNep413,accountFor,reason,toNear,toYocto,isAccountId,NETWORKS} from './chain.mjs';
 import {openStore} from './store.mjs';
 import {sealer} from './secrets.mjs';
+import {checkWebhook,sendWebhook,telegram} from './alerts.mjs';
 const env=process.env,port=Number(env.PORT||3000),root=new URL('./public/',import.meta.url);
 const fail=message=>{console.error(message);process.exit(1)};
 // A public URL means the server is reachable from the internet.
@@ -72,7 +73,35 @@ const validName=n=>typeof n==='string'&&n.length>=2&&n.length<=32&&/^[a-z0-9](?:
 // What the browser sees of an account: never a key, sealed or not.
 async function snapshot(account){
  const r=await store.get(account),p=r?.profile||{};
- return {account,network,factory:factoryId||null,workspace:r?.workspace||null,vault:p.vault?{vault:p.vault.vault,agent:p.vault.agent,createdAt:p.vault.createdAt}:null,pending:p.pending?{name:p.pending.name}:null,aiKey:Boolean(p.aiKey),apiKeys:(p.apiKeys||[]).map(({hash,...k})=>k),createdAt:p.createdAt||null};
+ return {account,network,factory:factoryId||null,workspace:r?.workspace||null,vault:p.vault?{vault:p.vault.vault,agent:p.vault.agent,createdAt:p.vault.createdAt}:null,pending:p.pending?{name:p.pending.name}:null,aiKey:Boolean(p.aiKey),apiKeys:(p.apiKeys||[]).map(({hash,...k})=>k),alerts:{webhook:p.alerts?.webhook?.host||null,telegram:p.alerts?.telegram?.name||null,last:p.alerts?.last||null},createdAt:p.createdAt||null};
+}
+// Alerts: a customer's webhook and Telegram. Failures are recorded for the customer to see, never thrown at the action that caused them.
+const allowPrivate=network==='sandbox'&&env.PAYGATE_ALLOW_PRIVATE_WEBHOOKS==='1';
+const tg=env.TELEGRAM_BOT_TOKEN?telegram(env.TELEGRAM_BOT_TOKEN,{base:env.TELEGRAM_API_URL}):null,tgCodes=new Map();let tgBot=null;
+const appUrl=()=>publicUrl||origins[0];
+async function notify(account,event,text,data={}){
+ const r=await store.get(account),a=r?.profile?.alerts;if(!a)return;
+ const link=data.jobId?`${appUrl()}/?job=${encodeURIComponent(data.jobId)}`:appUrl(),full=`${text}\n${link}`,errors=[];
+ if(a.webhook)await sendWebhook({url:box.open(a.webhook.url),secret:box.open(a.webhook.secret),event,text:full,data:{...data,link},allowPrivate}).catch(e=>errors.push('Webhook: '+e.message));
+ if(a.telegram&&tg)await tg.send(a.telegram.chatId,full).catch(e=>errors.push(e.message));
+ await store.update(account,x=>({...x,profile:{...x.profile,alerts:{...x.profile.alerts,last:{event,at:new Date().toISOString(),error:errors.join(' ')||null}}}})).catch(()=>{});
+}
+const alert=(...args)=>{notify(...args).catch(()=>{})};
+async function telegramUpdate(u){
+ const m=u.message,code=/^\/start\s+([A-Za-z0-9_-]{16,64})$/.exec(m?.text||'')?.[1];if(!m?.chat?.id)return;
+ const pending=code&&tgCodes.get(code);
+ if(!pending||pending.until<Date.now()){await tg.send(m.chat.id,'Open PayGate, go to Settings → Alerts and select Connect Telegram to link this chat.').catch(()=>{});return}
+ tgCodes.delete(code);
+ await store.update(pending.account,x=>({...x,profile:{...x.profile,alerts:{...x.profile.alerts,telegram:{chatId:m.chat.id,name:m.chat.username||m.chat.first_name||'Telegram'}}}}));
+ await tg.send(m.chat.id,`Connected to PayGate for ${pending.account}. You will get a message when a payment needs your approval.`).catch(()=>{});
+}
+// Hosted servers receive Telegram updates by webhook, checked with a secret header; local runs poll.
+const tgPath='/telegram/'+sha('telegram-path:'+secret).slice(0,32),tgSecret=sha('telegram-secret:'+secret).slice(0,48);
+if(tg){
+ tg.call('getMe').then(async me=>{tgBot=me.username;
+  if(hosted)await tg.call('setWebhook',{url:publicUrl+tgPath,secret_token:tgSecret,allowed_updates:['message']});
+  else{await tg.call('deleteWebhook').catch(()=>{});let offset=0;(async function poll(){try{for(const u of await tg.call('getUpdates',{offset,timeout:25,allowed_updates:['message']})){offset=u.update_id+1;await telegramUpdate(u)}}catch{await new Promise(d=>setTimeout(d,5000))}setTimeout(poll,100)})()}
+ }).catch(e=>console.error('Telegram alerts are off: '+e.message));
 }
 const paying=new Set();
 // Turns a request into what the server, the chain or NEAR AI did. Only these results reach the workspace.
@@ -99,7 +128,8 @@ async function act(c,account,req){
   if(paying.has(key))throw Error('This payment is already in progress.');
   paying.add(key);try{
    const r=await v.request(j,key),settlement={network,vault:v.vault,paymentId:r.paymentId,amountYocto:r.amountYocto,requestTx:r.txHash};
-   if(r.status==='sent')return commit({action:'paid',id:j.id,settlement:{...settlement,route:'auto',txHash:r.txHash,explorer:v.explorer(r.txHash)}});
+   if(r.status==='sent'){alert(account,'payment.paid',`PayGate: paid ${j.amount} NEAR to ${j.payee} for "${j.title}".`,{jobId:j.id,amount:j.amount,payee:j.payee,txHash:r.txHash});return commit({action:'paid',id:j.id,settlement:{...settlement,route:'auto',txHash:r.txHash,explorer:v.explorer(r.txHash)}})}
+   alert(account,'payment.held',`PayGate: ${j.amount} NEAR to ${j.payee} for "${j.title}" is waiting for your approval.`,{jobId:j.id,amount:j.amount,payee:j.payee,paymentId:r.paymentId});
    return commit({action:'requested',id:j.id,payment:settlement});
   }finally{paying.delete(key)}
  }
@@ -148,6 +178,21 @@ async function act(c,account,req){
   throw last;
  }
  if(c.action==='vault-cancel'){await setProfile(x=>{delete x.pending;return x});return snapshot(account)}
+ if(c.action==='alerts-webhook'){
+  if(c.url===''){await setProfile(x=>{const a={...x.alerts};delete a.webhook;return {...x,alerts:a}});return snapshot(account)}
+  const url=await checkWebhook(c.url,{allowPrivate}),signing=randomBytes(24).toString('base64url');
+  await sendWebhook({url,secret:signing,event:'alerts.test',text:'PayGate alerts are connected. You will hear here when a payment needs your approval.',data:{},allowPrivate});
+  await setProfile(x=>({...x,alerts:{...x.alerts,webhook:{url:box.seal(url),secret:box.seal(signing),host:new URL(url).hostname}}}));
+  return {...await snapshot(account),signingSecret:signing};
+ }
+ if(c.action==='alerts-telegram'){
+  if(c.remove===true){await setProfile(x=>{const a={...x.alerts};delete a.telegram;return {...x,alerts:a}});return snapshot(account)}
+  if(!tg||!tgBot)throw Error('Telegram alerts are not set up on this server.');
+  const code=randomBytes(18).toString('base64url');tgCodes.set(code,{account,until:Date.now()+6e5});
+  for(const [k,v] of tgCodes)if(v.until<Date.now())tgCodes.delete(k);
+  return {...await snapshot(account),telegramLink:`https://t.me/${tgBot}?start=${code}`};
+ }
+ if(c.action==='alerts-test'){if(!profile.alerts?.webhook&&!profile.alerts?.telegram)throw Error('Connect a webhook or Telegram first.');await notify(account,'alerts.test','PayGate test alert: this is how payment approvals will reach you.');return snapshot(account)}
  if(c.action==='ai-key'){
   if(c.key===''){await setProfile(x=>{delete x.aiKey;return x});return snapshot(account)}
   if(typeof c.key!=='string'||c.key.trim().length<10||c.key.length>500)throw Error('Paste the API key from cloud.near.ai.');
@@ -206,7 +251,7 @@ async function agentCall(account,key,name,a={}){
  if(name==='list_jobs'){const w=(await snapshot(account)).workspace;return w.jobs.filter(j=>!a.status||j.status===a.status).slice(0,100).map(j=>jobView(w,j))}
  if(name==='get_job')return job(a.id);
  if(name==='create_job'){const s=await run({action:'create',title:a.title,brief:a.brief,payee:a.payee,amount:typeof a.amount==='string'?Number(a.amount):a.amount});return jobView(s.workspace,s.workspace.jobs[0])}
- if(name==='deliver_job')return run({action:'deliver',id:a.id,text:a.text},a.id);
+ if(name==='deliver_job'){const out=await run({action:'deliver',id:a.id,text:a.text},a.id);alert(account,'job.delivered',`PayGate: your agent delivered "${out.title}". Review it before paying.`,{jobId:out.id});return out}
  if(name==='cancel_job')return run({action:'cancel',id:a.id},a.id);
  if(name==='request_payment'){if(!key.pay)throw Object.assign(Error('This API key cannot request payments. Create a key with payments allowed.'),{status:403});return run({action:'pay',id:a.id},a.id)}
  throw Object.assign(Error('Unknown tool.'),{status:404});
@@ -257,10 +302,11 @@ if(hosted)res.setHeader('Strict-Transport-Security','max-age=31536000');
 if(req.url==='/healthz'&&req.method==='GET')return json(200,{ok:true});if(!hosts.includes(req.headers.host))return json(403,{error:'Invalid host.'});
 try{
 const url=new URL(req.url,origins[0]),path=url.pathname,ip=ipOf(req),body=async()=>{let raw='';for await(const chunk of req){raw+=chunk;if(Buffer.byteLength(raw)>16384)throw Error('Request too large.')}const c=JSON.parse(raw);if(!c||typeof c!=='object'||Array.isArray(c))throw Error();return c};
+if(tg&&path===tgPath&&req.method==='POST'){if(req.headers['x-telegram-bot-api-secret-token']!==tgSecret)return json(403,{error:'Forbidden.'});try{await telegramUpdate(await body())}catch{}return json(200,{ok:true})}
 if(path.startsWith('/dev-wallet/')&&req.method==='GET'){if(await devWallet(url,req,res))return;return json(404,{error:'Not found.'})}
 if(path.startsWith('/api/v1/')||path==='/mcp')return agentApi(url,req,res,json,body,ip);
 if(path.startsWith('/api/')&&req.method==='POST'&&(req.headers['x-paygate']!=='1'||(req.headers.origin&&!origins.includes(req.headers.origin))))return json(403,{error:'Request origin rejected.'});
-if(path==='/api/config'&&req.method==='GET')return json(200,{network,factory:factoryId||null,ready:Boolean(factoryId),walletUrl,rpcUrl:NETWORKS[network]?.rpcUrl||null,explorer,minDeposit:0.4});
+if(path==='/api/config'&&req.method==='GET')return json(200,{network,factory:factoryId||null,ready:Boolean(factoryId),walletUrl,rpcUrl:NETWORKS[network]?.rpcUrl||null,explorer,minDeposit:0.4,telegram:Boolean(tgBot)});
 if(path==='/api/session'&&req.method==='GET')return json(200,{account:await signedIn(req)});
 if(path==='/api/auth/challenge'&&req.method==='POST'){
  if(limited('challenge '+ip,30,6e5))return json(429,{error:'Too many sign-in attempts. Try again in a few minutes.'});

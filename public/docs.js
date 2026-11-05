@@ -96,6 +96,17 @@ curl -X POST $BASE/jobs/PG-1a2b3c4d/pay -H "Authorization: Bearer $KEY"</code></
 <h2>What a payment request returns</h2><p>At or below the automatic limit, the job comes back <code>Paid</code> with a receipt: route, NEAR transaction hash and explorer link. Above it, the job comes back <code>Awaiting approval</code>: the vault holds the payment until you approve or reject it in your wallet. The agent can poll <code>get_job</code>.</p>
 <h2>What an agent can never do</h2><ul><li>Approve or reject held payments, freeze or unfreeze, change limits or payees, or withdraw. These need your wallet.</li><li>Pay anyone outside your allowlist, or more than your limits. The vault refuses it on-chain.</li><li>See your keys. API responses never include them.</li></ul>
 <p>Errors return a JSON <code>{"error": "…"}</code> with status 400, 401 (missing or revoked key), 403 (key cannot pay), 404 or 429 (more than 120 requests a minute).</p>`},
+{id:'alerts',title:'Alerts',html:`
+<p class="eyebrow">Using PayGate</p><h1>Alerts</h1>
+<p class="lead">Know the moment a payment needs your approval, without keeping PayGate open.</p>
+<table><thead><tr><th>Event</th><th>When</th></tr></thead><tbody>
+<tr><td><code>payment.held</code></td><td>A payment above your automatic limit waits for your wallet</td></tr>
+<tr><td><code>payment.paid</code></td><td>The vault sent a payment automatically</td></tr>
+<tr><td><code>job.delivered</code></td><td>Your agent delivered work through the API</td></tr>
+</tbody></table>
+<p>Every alert links to the job; opening the link takes you straight to its review.</p>
+<h2>Webhook</h2><p>In <b>Settings → Alerts</b>, paste an incoming-webhook URL from Slack or Discord, or any https endpoint. PayGate sends a test message before saving it. Slack and Discord get a plain message. Other endpoints get JSON <code>{event, text, data, sentAt}</code> with headers <code>X-PayGate-Event</code> and <code>X-PayGate-Signature: sha256=…</code>, the HMAC-SHA256 of the body with the signing secret shown when you connect. PayGate only calls public https addresses.</p>
+<h2>Telegram</h2><p>Select <b>Connect Telegram</b>, open the PayGate bot and press Start within 10 minutes. Operators enable this by setting <code>TELEGRAM_BOT_TOKEN</code> to a bot made with @BotFather.</p>`},
 {id:'limits',title:'Limits and freeze',html:`
 <p class="eyebrow">Using PayGate</p><h1>Limits and freeze</h1>
 <p class="lead">Three limits decide how much the agent can move without you.</p>

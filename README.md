@@ -69,6 +69,7 @@ A worst-case attack demo hijacks the agent and uses its real key to try 12 ways 
 | **On-chain rules** | Payee allowlist, automatic, per-payment and daily limits, one payment per job, held payments, freeze, and withdrawal that works while frozen. |
 | **Wallet approvals** | Approve, reject, freeze, change limits, add or remove payees, withdraw, each signed in the customer's connected wallet and checked on-chain. Other wallets and NEAR CLI work by pasting the transaction hash. |
 | **Jobs workflow** | Create, deliver, review, pay or hold, approve or reject, cancel. Budgets are checked against limits and against funds already committed. |
+| **Alerts** | Signed webhooks for Slack, Discord or any https endpoint, and Telegram, when a payment waits for approval, when one is paid, and when an agent delivers work. Each alert links straight to the job. |
 | **Agent API and MCP** | Customers create scoped API keys so their own AI agents can read the vault, create jobs, deliver work and request payment over REST (`/api/v1`) or as MCP tools (`/mcp`). Agents can never approve, freeze, change limits or payees, or withdraw. |
 | **Bring your own AI** | Customers add their own NEAR AI Cloud key, stored encrypted, to let the agent do the work. Chat id, request and response hashes and the response signature are kept with the receipt. |
 | **Dollar values** | A live NEAR Intents 1Click quote values each payment at review time. Quotes are dry, so no swap is made. |
@@ -290,6 +291,7 @@ npm run check:deployed -- https://your-domain.up.railway.app
 | `PUBLIC_URL` | none | Public https address. Turns on hosted mode. `RAILWAY_PUBLIC_DOMAIN` also works |
 | `NEAR_RPC_URL` | FastNEAR free RPC | RPC endpoint. Several comma-separated URLs fail over to each other. Use a dedicated provider for a public mainnet service. Required for `sandbox` |
 | `NEAR_AI_MODEL` | `qwen/qwen3.5-397b-a17b` | Model for inference and attestation |
+| `TELEGRAM_BOT_TOKEN` | none | Optional. A bot from @BotFather; turns on Telegram alerts |
 | `DATA_DIR` | `./data` | Local data folder |
 | `PORT`, `HOST` | `3000`; `127.0.0.1` locally, `0.0.0.0` hosted | Listen address |
 
@@ -394,6 +396,7 @@ POST requests need the header `X-PayGate: 1`. Account endpoints need a session.
 - sign-in, and vault creation through the factory, confirming on-chain that the vault has no keys and the agent has one restricted key;
 - automatic and approved payments, rejections, freeze, limits, payees and withdrawal;
 - forged approvals and injected results;
+- signed webhook and Telegram alerts for held and paid payments;
 - agent API keys over REST and MCP, read-only and revoked keys;
 - isolation between two customers, taken vault names, and forged and replayed sign-ins;
 - data deletion and the mobile layout.
