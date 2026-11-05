@@ -5,7 +5,7 @@ import {pathToFileURL} from 'node:url';
 import {KeyPair,decodeTransaction} from 'near-api-js';
 import {transition,verify,CLIENT_ACTIONS} from './domain.mjs';
 import {usdValue,attestation,deliver,integrations} from './near.mjs';
-import {vaultClient,factoryClient,verifySignIn,signNep413,accountFor,reason,toNear,toYocto,isAccountId,NETWORKS} from './chain.mjs';
+import {vaultClient,factoryClient,verifySignIn,signNep413,accountFor,reason,toNear,toYocto,toUnits,isAccountId,NETWORKS,USDC,TOKEN_STORAGE} from './chain.mjs';
 import {openStore} from './store.mjs';
 import {sealer} from './secrets.mjs';
 import {checkWebhook,sendWebhook,telegram} from './alerts.mjs';
@@ -45,7 +45,13 @@ const factory=factoryId?factoryClient({rpcUrl,network,factory:factoryId,walletUr
 if(Boolean(env.PAYGATE_RELAYER_ACCOUNT)!==Boolean(env.PAYGATE_RELAYER_KEY))fail('Set both PAYGATE_RELAYER_ACCOUNT and PAYGATE_RELAYER_KEY, or neither.');
 if(env.PAYGATE_RELAYER_ACCOUNT&&(!isAccountId(env.PAYGATE_RELAYER_ACCOUNT)||!/^ed25519:/.test(env.PAYGATE_RELAYER_KEY)))fail('PAYGATE_RELAYER_ACCOUNT or PAYGATE_RELAYER_KEY is not valid.');
 const relayer=env.PAYGATE_RELAYER_ACCOUNT?{accountId:env.PAYGATE_RELAYER_ACCOUNT,key:env.PAYGATE_RELAYER_KEY}:null;
+// USDC budgets: vaults can hold Circle's USDC on this network instead of NEAR.
+const usdc=env.PAYGATE_USDC||USDC[network]||null;
+if(usdc&&!isAccountId(usdc))fail('PAYGATE_USDC is not a valid account.');
+// Only factories built with token support can create USDC vaults; older ones would silently create NEAR vaults.
+let factoryTokens=false;
 const provider=(factory||factoryClient({rpcUrl,network,factory:'none',walletUrl})).provider;
+if(factory)factory.config().then(c=>{factoryTokens=c?.tokens===true}).catch(()=>{});
 const explorer=NETWORKS[network]?.explorer||null;
 const hits=new Map(),SESSION_MS=7*864e5,MESSAGE='Sign in to PayGate';
 const ipOf=req=>(hosted&&String(req.headers['x-real-ip']||req.headers['x-forwarded-for']||'').split(',')[0].trim())||req.socket.remoteAddress;
@@ -64,20 +70,20 @@ const clients=new Map();
 function vaultFor(account,profile){
  const v=profile.vault;if(!v)return null;
  const key=v.vault+v.agentKey;let c=clients.get(account);
- if(c?.key!==key){c={key,client:vaultClient({network,rpcUrl,vault:v.vault,agent:v.agent,owner:account,agentKey:box.open(v.agentKey),walletUrl,relayer})};clients.set(account,c)}
+ if(c?.key!==key){c={key,client:vaultClient({network,rpcUrl,vault:v.vault,agent:v.agent,owner:account,agentKey:box.open(v.agentKey),walletUrl,relayer,token:v.token||null,decimals:v.decimals,symbol:v.symbol})};clients.set(account,c)}
  return c.client;
 }
 const need=v=>{if(!v)throw Error('Create your vault first.');return v};
 async function vaultView(v){
  const [p,recipients,pending]=await Promise.all([v.policy(),v.recipients(),v.pending()]);
- return {configured:true,network,vault:v.vault,owner:v.owner,agent:p.agent,frozen:p.frozen,spendable:p.spendable,spent:p.spent,windowEndsMs:p.window_ends_ms,limits:p.limits,recipients,pending:pending.map(x=>({...x,amount:toNear(x.amount)}))};
+ return {configured:true,network,vault:v.vault,owner:v.owner,agent:p.agent,frozen:p.frozen,spendable:p.spendable,spent:p.spent,windowEndsMs:p.window_ends_ms,limits:p.limits,recipients,currency:v.symbol,token:v.token,registered:await v.registered(recipients),pending:pending.map(x=>({...x,amount:v.fromUnits(x.amount)}))};
 }
-const amount=(n,label)=>{if(typeof n!=='number'||!Number.isFinite(n)||n<0.0001||n>1e6)throw Error(`Enter ${label} in NEAR from 0.0001.`);return toYocto(n)};
+const amount=(n,label,decimals=24)=>{if(typeof n!=='number'||!Number.isFinite(n)||n<0.0001||n>1e9)throw Error(`Enter ${label} from 0.0001.`);return toUnits(n,decimals)};
 const validName=n=>typeof n==='string'&&n.length>=2&&n.length<=32&&/^[a-z0-9](?:[a-z0-9]|-(?!-))*[a-z0-9]$/.test(n)&&!n.endsWith('-agent');
 // What the browser sees of an account: never a key, sealed or not.
 async function snapshot(account){
  const r=await store.get(account),p=r?.profile||{};
- return {account,network,factory:factoryId||null,workspace:r?.workspace||null,vault:p.vault?{vault:p.vault.vault,agent:p.vault.agent,createdAt:p.vault.createdAt}:null,pending:p.pending?{name:p.pending.name}:null,aiKey:Boolean(p.aiKey),apiKeys:(p.apiKeys||[]).map(({hash,...k})=>k),alerts:{webhook:p.alerts?.webhook?.host||null,telegram:p.alerts?.telegram?.name||null,last:p.alerts?.last||null},createdAt:p.createdAt||null};
+ return {account,network,factory:factoryId||null,workspace:r?.workspace||null,vault:p.vault?{vault:p.vault.vault,agent:p.vault.agent,currency:p.vault.symbol||'NEAR',createdAt:p.vault.createdAt}:null,pending:p.pending?{name:p.pending.name}:null,aiKey:Boolean(p.aiKey),apiKeys:(p.apiKeys||[]).map(({hash,...k})=>k),alerts:{webhook:p.alerts?.webhook?.host||null,telegram:p.alerts?.telegram?.name||null,last:p.alerts?.last||null},createdAt:p.createdAt||null};
 }
 // Alerts: a customer's webhook and Telegram. Failures are recorded for the customer to see, never thrown at the action that caused them.
 const allowPrivate=network==='sandbox'&&env.PAYGATE_ALLOW_PRIVATE_WEBHOOKS==='1';
@@ -125,15 +131,15 @@ async function act(c,account,req){
   if(limited('agent '+account,30,36e5))throw Error('Too many agent runs. Try again later.');
   return commit({action:'complete',id:c.id,delivery:await deliver(j,box.open(profile.aiKey))});
  }
- if(c.action==='quote'){if(j?.status!=='Review')return snapshot(account);return commit({action:'quote',id:c.id,quote:await usdValue(j)})}
+ if(c.action==='quote'){if(j?.status!=='Review')return snapshot(account);return commit({action:'quote',id:c.id,quote:v?.token?{source:'USDC',usd:j.amount,usdc:String(j.amount)}:await usdValue(j)})}
  if(c.action==='pay'){
   need(v);if(!j)throw Error('Job not found.');if(j.status==='Awaiting approval')throw Error('This payment is waiting for your approval in your wallet.');if(j.status!=='Review')throw Error('Job must be awaiting review.');
   if((await v.policy()).frozen)throw Error('The vault is frozen. Unfreeze it in Controls first.');
   if(paying.has(key))throw Error('This payment is already in progress.');
   paying.add(key);try{
-   const r=await v.request(j,key),settlement={network,vault:v.vault,paymentId:r.paymentId,amountYocto:r.amountYocto,requestTx:r.txHash};
-   if(r.status==='sent'){alert(account,'payment.paid',`PayGate: paid ${j.amount} NEAR to ${j.payee} for "${j.title}".`,{jobId:j.id,amount:j.amount,payee:j.payee,txHash:r.txHash});return commit({action:'paid',id:j.id,settlement:{...settlement,route:'auto',txHash:r.txHash,explorer:v.explorer(r.txHash)}})}
-   alert(account,'payment.held',`PayGate: ${j.amount} NEAR to ${j.payee} for "${j.title}" is waiting for your approval.`,{jobId:j.id,amount:j.amount,payee:j.payee,paymentId:r.paymentId});
+   const r=await v.request(j,key),settlement={network,vault:v.vault,currency:v.symbol,token:v.token,paymentId:r.paymentId,amountUnits:r.amountYocto,requestTx:r.txHash};
+   if(r.status==='sent'){alert(account,'payment.paid',`PayGate: paid ${j.amount} ${v.symbol} to ${j.payee} for "${j.title}".`,{jobId:j.id,amount:j.amount,payee:j.payee,txHash:r.txHash});return commit({action:'paid',id:j.id,settlement:{...settlement,route:'auto',txHash:r.txHash,explorer:v.explorer(r.txHash)}})}
+   alert(account,'payment.held',`PayGate: ${j.amount} ${v.symbol} to ${j.payee} for "${j.title}" is waiting for your approval.`,{jobId:j.id,amount:j.amount,payee:j.payee,paymentId:r.paymentId});
    return commit({action:'requested',id:j.id,payment:settlement});
   }finally{paying.delete(key)}
  }
@@ -149,15 +155,19 @@ async function act(c,account,req){
   if(c.kind==='approve'||c.kind==='reject'){if(j?.status!=='Awaiting approval')throw Error('This job is not waiting for approval.');return link(c.kind+'_payment',{id:j.payment.paymentId})}
   if(c.kind==='freeze'){if(typeof c.frozen!=='boolean')throw Error('Invalid freeze state.');return link('set_frozen',{frozen:c.frozen})}
   if(c.kind==='payee'){if(!isAccountId(c.account))throw Error('Enter a valid NEAR account, such as name.near.');if(typeof c.allowed!=='boolean')throw Error('Invalid payee change.');return link('set_recipient',{recipient:c.account,allowed:c.allowed})}
-  if(c.kind==='limits'){const l={auto_limit:amount(c.auto,'limits'),max_payment:amount(c.max,'limits'),daily_limit:amount(c.daily,'limits')};if(!(c.auto<=c.max&&c.max<=c.daily))throw Error('Limits must satisfy automatic ≤ maximum payment ≤ daily.');return link('set_limits',{limits:l})}
-  if(c.kind==='withdraw')return link('withdraw',{amount:amount(c.amount,'an amount')});
+  if(c.kind==='limits'){const l={auto_limit:amount(c.auto,'limits',v.decimals),max_payment:amount(c.max,'limits',v.decimals),daily_limit:amount(c.daily,'limits',v.decimals)};if(!(c.auto<=c.max&&c.max<=c.daily))throw Error('Limits must satisfy automatic ≤ maximum payment ≤ daily.');return link('set_limits',{limits:l})}
+  if(c.kind==='withdraw')return link('withdraw',{amount:amount(c.amount,'an amount',v.decimals)});
+  // USDC deposits register the vault with the token and send the USDC in one wallet transaction.
+  if(c.kind==='deposit'){if(!v.token)throw Error('Send NEAR to the vault account from any wallet.');return v.tokenLink([{method:'storage_deposit',args:{account_id:v.vault,registration_only:true},deposit:TOKEN_STORAGE},{method:'ft_transfer_call',args:{receiver_id:v.vault,amount:amount(c.amount,'an amount',v.decimals),msg:''},deposit:'1',gas:100000000000000n}],callbackFor(req))}
+  if(c.kind==='register'){if(!v.token)throw Error('NEAR vaults need no registration.');if(!isAccountId(c.account))throw Error('Invalid account.');return v.tokenLink([{method:'storage_deposit',args:{account_id:c.account,registration_only:true},deposit:TOKEN_STORAGE}],callbackFor(req))}
   throw Error('Unknown owner action.');
  }
  if(c.action==='vault-create'){
   if(!factory)throw Error('This PayGate server has no factory configured yet.');
   if(v)throw Error('You already have a vault.');
   if(!validName(c.name))throw Error('Use 2 to 32 lowercase letters, digits or single dashes for the vault name. It cannot end in -agent.');
-  const limits={auto_limit:amount(c.auto,'limits'),max_payment:amount(c.max,'limits'),daily_limit:amount(c.daily,'limits')};
+  const token=c.currency==='USDC'?usdc:null;if(c.currency==='USDC'&&!(usdc&&factoryTokens))throw Error('USDC vaults are not available on this PayGate yet.');
+  const dec=token?6:24,limits={auto_limit:amount(c.auto,'limits',dec),max_payment:amount(c.max,'limits',dec),daily_limit:amount(c.daily,'limits',dec)};
   if(!(c.auto<=c.max&&c.max<=c.daily))throw Error('Limits must satisfy automatic ≤ maximum payment ≤ daily.');
   if(typeof c.fund!=='number'||!(c.fund>=0.4)||c.fund>1e6)throw Error('Fund the vault with at least 0.4 NEAR: 0.3 pays for the agent account and its gas.');
   const payees=[...new Set((Array.isArray(c.payees)?c.payees:[]).map(p=>String(p).trim().toLowerCase()).filter(Boolean))];
@@ -166,14 +176,15 @@ async function act(c,account,req){
   if(await factory.exists(`${c.name}.${factory.factory}`))throw Error(`The vault name ${c.name} is taken. Choose another.`);
   const agentKey=KeyPair.fromRandom('ed25519'),publicKey=agentKey.getPublicKey().toString();
   // Earlier attempts are kept: a wallet may still sign an older link, and its agent key must not be lost.
-  await setProfile(p=>({...p,pending:{name:c.name,publicKey,agentKey:box.seal(agentKey.toString()),createdAt:new Date().toISOString()},attempts:[{name:c.name,publicKey,agentKey:box.seal(agentKey.toString())},...(p.attempts||[])].slice(0,5)}));
-  return factory.createLink({owner:account,name:c.name,agentKey:publicKey,limits,payees,fund:c.fund,callbackUrl:callbackFor(req)});
+  await setProfile(p=>({...p,pending:{name:c.name,publicKey,agentKey:box.seal(agentKey.toString()),createdAt:new Date().toISOString()},attempts:[{name:c.name,publicKey,agentKey:box.seal(agentKey.toString()),token},...(p.attempts||[])].slice(0,5)}));
+  return factory.createLink({owner:account,name:c.name,agentKey:publicKey,limits,payees,fund:c.fund,token,callbackUrl:callbackFor(req)});
  }
  if(c.action==='vault-confirm'){
   if(v)throw Error('You already have a vault.');
   const attempts=profile.attempts||(profile.pending?[profile.pending]:[]);if(!attempts.length)throw Error('Start creating a vault first.');
   if(!factory)throw Error('This PayGate server has no factory configured yet.');
-  const save=(a,{vault,agent})=>setProfile(x=>{const n={...x,vault:{vault,agent,agentKey:a.agentKey,createdAt:new Date().toISOString()}};delete n.pending;delete n.attempts;return n});
+  // The vault's currency is read from the chain, not taken from the request.
+  const save=async(a,{vault,agent})=>{const token=(await provider.callFunction({contractId:vault,method:'get_policy',args:{},blockQuery:{finality:'optimistic'}}).catch(()=>({})))?.token||null;if(token&&token!==usdc)throw Error('That vault holds a token PayGate does not support.');return setProfile(x=>{const n={...x,vault:{vault,agent,agentKey:a.agentKey,token,decimals:token?6:24,symbol:token?'USDC':'NEAR',createdAt:new Date().toISOString()}};delete n.pending;delete n.attempts;return n})};
   // With a hash, the transaction is checked; without one, the chain itself is read. Either way the result must match an agent key PayGate issued.
   if(!c.txHash){for(const a of attempts){const found=await factory.findCreated({owner:account,name:a.name,agentKey:a.publicKey});if(found){await save(a,found);return snapshot(account)}}throw Error('Your vault is not on-chain yet. If you signed in your wallet, wait a moment and check again.')}
   let last;
@@ -246,15 +257,16 @@ async function devWallet(url,req,res){
 // Agent API: REST under /api/v1 and an MCP server at /mcp, both authenticated with a customer's API key.
 // Agents run the same actions, rules and on-chain checks as the dashboard. They can never approve, freeze,
 // change limits or payees, or withdraw: those stay with the owner's wallet.
-const jobView=(w,j)=>{const r=w.receipts.find(r=>r.jobId===j.id);return {id:j.id,title:j.title,brief:j.brief,payee:j.payee,amount:j.amount,currency:'NEAR',status:j.status,created:j.created,delivery:j.deliverable||null,payment:j.payment?{id:j.payment.paymentId,awaitingApproval:j.status==='Awaiting approval'}:null,receipt:r?{route:r.settlement.route,txHash:r.settlement.txHash,explorer:r.settlement.explorer,paidAt:r.date}:null}};
+const jobView=(w,j,currency='NEAR')=>{const r=w.receipts.find(r=>r.jobId===j.id);return {id:j.id,title:j.title,brief:j.brief,payee:j.payee,amount:j.amount,currency,status:j.status,created:j.created,delivery:j.deliverable||null,payment:j.payment?{id:j.payment.paymentId,awaitingApproval:j.status==='Awaiting approval'}:null,receipt:r?{route:r.settlement.route,txHash:r.settlement.txHash,explorer:r.settlement.explorer,paidAt:r.date}:null}};
 async function agentCall(account,key,name,a={}){
- const job=async id=>{const w=(await snapshot(account)).workspace,j=w?.jobs.find(j=>j.id===id);if(!j)throw Error('Job not found.');return jobView(w,j)};
- const run=async(c,id)=>{const s=await act(c,account,{headers:{}});return id?jobView(s.workspace,s.workspace.jobs.find(j=>j.id===id)):s};
+ const cur=(await store.get(account))?.profile?.vault?.symbol||'NEAR',view=(w,j)=>jobView(w,j,cur);
+ const job=async id=>{const w=(await snapshot(account)).workspace,j=w?.jobs.find(j=>j.id===id);if(!j)throw Error('Job not found.');return view(w,j)};
+ const run=async(c,id)=>{const s=await act(c,account,{headers:{}});return id?view(s.workspace,s.workspace.jobs.find(j=>j.id===id)):s};
  if(name==='get_vault'){const r=await store.get(account),v=vaultFor(account,r?.profile||{});if(!v)return {configured:false,message:'The owner has not created a vault yet.'};const view=await vaultView(v);const w=r.workspace;return {...view,payees:view.recipients.map(a=>({account:a,label:w.payees[a]||null})),committed:w.jobs.filter(j=>['Working','Review','Awaiting approval'].includes(j.status)).reduce((s,j)=>s+j.amount,0)}}
  if(name==='list_payees'){const r=await store.get(account),v=vaultFor(account,r?.profile||{});if(!v)return [];return (await v.recipients()).map(a=>({account:a,label:r.workspace.payees[a]||null}))}
- if(name==='list_jobs'){const w=(await snapshot(account)).workspace;return w.jobs.filter(j=>!a.status||j.status===a.status).slice(0,100).map(j=>jobView(w,j))}
+ if(name==='list_jobs'){const w=(await snapshot(account)).workspace;return w.jobs.filter(j=>!a.status||j.status===a.status).slice(0,100).map(j=>view(w,j))}
  if(name==='get_job')return job(a.id);
- if(name==='create_job'){const s=await run({action:'create',title:a.title,brief:a.brief,payee:a.payee,amount:typeof a.amount==='string'?Number(a.amount):a.amount});return jobView(s.workspace,s.workspace.jobs[0])}
+ if(name==='create_job'){const s=await run({action:'create',title:a.title,brief:a.brief,payee:a.payee,amount:typeof a.amount==='string'?Number(a.amount):a.amount});return view(s.workspace,s.workspace.jobs[0])}
  if(name==='deliver_job'){const out=await run({action:'deliver',id:a.id,text:a.text},a.id);alert(account,'job.delivered',`PayGate: your agent delivered "${out.title}". Review it before paying.`,{jobId:out.id});return out}
  if(name==='cancel_job')return run({action:'cancel',id:a.id},a.id);
  if(name==='request_payment'){if(!key.pay)throw Object.assign(Error('This API key cannot request payments. Create a key with payments allowed.'),{status:403});return run({action:'pay',id:a.id},a.id)}
@@ -310,7 +322,7 @@ if(tg&&path===tgPath&&req.method==='POST'){if(req.headers['x-telegram-bot-api-se
 if(path.startsWith('/dev-wallet/')&&req.method==='GET'){if(await devWallet(url,req,res))return;return json(404,{error:'Not found.'})}
 if(path.startsWith('/api/v1/')||path==='/mcp')return agentApi(url,req,res,json,body,ip);
 if(path.startsWith('/api/')&&req.method==='POST'&&(req.headers['x-paygate']!=='1'||(req.headers.origin&&!origins.includes(req.headers.origin))))return json(403,{error:'Request origin rejected.'});
-if(path==='/api/config'&&req.method==='GET')return json(200,{network,factory:factoryId||null,ready:Boolean(factoryId),walletUrl,rpcUrl:NETWORKS[network]?.rpcUrl||null,explorer,minDeposit:0.4,telegram:Boolean(tgBot)});
+if(path==='/api/config'&&req.method==='GET')return json(200,{network,factory:factoryId||null,ready:Boolean(factoryId),walletUrl,rpcUrl:NETWORKS[network]?.rpcUrl||null,explorer,minDeposit:0.4,telegram:Boolean(tgBot),usdc:Boolean(usdc&&factoryTokens)});
 if(path==='/api/session'&&req.method==='GET')return json(200,{account:await signedIn(req)});
 if(path==='/api/auth/challenge'&&req.method==='POST'){
  if(limited('challenge '+ip,30,6e5))return json(429,{error:'Too many sign-in attempts. Try again in a few minutes.'});

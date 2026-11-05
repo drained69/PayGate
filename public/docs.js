@@ -57,6 +57,14 @@ npm run dev:chain</code></pre>
 <pre><code>near contract call-function as-transaction acme.paygate.example.near approve_payment \\
   json-args '{"id":7}' prepaid-gas '60 Tgas' attached-deposit '1 yoctoNEAR' \\
   sign-as you.near network-config mainnet sign-with-keychain send</code></pre>`},
+{id:'usdc',title:'USDC budgets',html:`
+<p class="eyebrow">Using PayGate</p><h1>USDC budgets</h1>
+<p class="lead">Budget in dollars: a vault can hold and pay in USDC instead of NEAR.</p>
+<ol><li>When you create your vault, choose <b>USDC</b> as the currency. Limits are then in USDC, for example 10 automatic, 50 per payment and 100 per day. The 0.4 NEAR you send still funds the agent and the vault's storage.</li>
+<li>In <b>Controls</b>, register each payee with USDC (<b>Register in wallet</b>, 0.00125 NEAR once per payee). A token contract only pays registered accounts; a payment to an unregistered one is refunded to your vault.</li>
+<li>In <b>Treasury</b>, <b>Deposit USDC</b>. Your wallet sends USDC to the vault with <code>ft_transfer_call</code>, and registers the vault with USDC if needed.</li>
+<li>Pay jobs as usual. Receipts and alerts show USDC, and withdrawals return USDC to you.</li></ol>
+<p>The vault keeps its own ledger of USDC: it counts only deposits from the USDC contract itself, so tokens sent another way, or other tokens, are not spendable. On mainnet PayGate uses Circle's native USDC; on testnet, Circle's testnet USDC from Circle's faucet.</p>`},
 {id:'agent-api',title:'Agent API and MCP',html:`
 <p class="eyebrow">For agents</p><h1>Agent API and MCP</h1>
 <p class="lead">Your own AI agent can use PayGate directly: read the vault, create jobs, deliver work and request payment. The vault's rules apply exactly as they do to you in the dashboard.</p>
@@ -133,7 +141,7 @@ curl -X POST $BASE/jobs/PG-1a2b3c4d/pay -H "Authorization: Bearer $KEY"</code></
 <p class="eyebrow">Operate</p><h1>Run your own PayGate</h1>
 <p class="lead">For operators. Customers do not need any of this: they sign in and create a vault.</p>
 <h2>1. Deploy the platform</h2>
-<p>Run once from your own machine with an operator account. It publishes the vault code as a global contract pinned by hash, so every customer vault runs exactly that code, and deploys the factory, which ends with no keys. Publishing burns about 20.7 NEAR and the factory code locks about 1.8 NEAR, so fund it with 25 NEAR. Without the confirmation flag it only prints a summary.</p>
+<p>Run once from your own machine with an operator account. It publishes the vault code as a global contract pinned by hash, so every customer vault runs exactly that code, and deploys the factory, which ends with no keys. Publishing burns about 23.4 NEAR and the factory code locks about 1.8 NEAR, so fund it with 28 NEAR. Without the confirmation flag it only prints a summary.</p>
 <pre><code>NEAR_NETWORK=mainnet NEAR_OPERATOR_ACCOUNT=you.near NEAR_OPERATOR_KEY=ed25519:... \\
 npm run platform:deploy</code></pre>
 <p>Run it again with <code>-- --yes-mainnet</code> to deploy. It prints the <code>PAYGATE_FACTORY</code> value for your server.</p>

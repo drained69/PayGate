@@ -15,8 +15,13 @@ export const accountFor=(rpcUrl,id,secretKey)=>new Account(id,providerFor(rpcUrl
 export function reason(e){const m=String(e?.message||e);return m.match(/Smart contract panicked: ([^"\n]+)/)?.[1]?.trim()||m.slice(0,300)}
 export const txHash=r=>r.transaction?.hash||r.transaction_outcome?.id;
 // Amounts are NEAR with at most four decimals, kept as integers of 0.0001 NEAR so no float reaches the chain.
-export const toYocto=n=>String(BigInt(Math.round(n*1e4))*UNIT);
-export const toNear=y=>Number(BigInt(y)/UNIT)/1e4;
+export const toUnits=(n,decimals=24)=>String(BigInt(Math.round(n*1e4))*10n**BigInt(decimals-4));
+export const fromUnits=(y,decimals=24)=>Number(BigInt(y)/10n**BigInt(decimals-4))/1e4;
+export const toYocto=n=>toUnits(n,24);
+export const toNear=y=>fromUnits(y,24);
+// USDC on each network: Circle's native USDC on mainnet and Circle's testnet USDC. Local nodes set their own.
+export const USDC={mainnet:'17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad2011e36133a1',testnet:'3e2210e1184b45b64c8a434c0a7e7b23cc04ea7eb7a6c3c32520d03d4afcb8af'};
+export const TOKEN_STORAGE='1250000000000000000000';
 export const isAccountId=s=>typeof s==='string'&&s.length>=2&&s.length<=64&&/^(([a-z\d]+[-_])*[a-z\d]+\.)*([a-z\d]+[-_])*[a-z\d]+$/.test(s);
 const isHash=h=>typeof h==='string'&&/^[1-9A-HJ-NP-Za-km-z]{43,44}$/.test(h);
 export const events=(outcome,standard)=>(outcome?.receipts_outcome||[]).flatMap(r=>r.outcome.logs).filter(l=>l.startsWith('EVENT_JSON:')).map(l=>{try{return JSON.parse(l.slice(11))}catch{return null}}).filter(e=>e?.standard===standard);
@@ -25,11 +30,12 @@ const items=e=>[].concat(e?.data??[]);
 const found=(outcome,event,id)=>events(outcome,'paygate_vault').some(e=>e.event===event&&items(e).some(d=>d.id===id));
 // A call for the signer's wallet to sign. Wallets connected through NEAR Connect take the transaction as is;
 // the local-node stand-in wallet takes a /sign link with an unsigned transaction, whose key and nonce it replaces.
-export async function walletLink({provider,walletUrl,signer,receiver,method,args,deposit=ONE_YOCTO,gas=GAS,callbackUrl}){
- const transaction={signerId:signer,receiverId:receiver,actions:[{type:'FunctionCall',params:{methodName:method,args,gas:String(gas),deposit:String(deposit)}}]};
+export async function walletLink({provider,walletUrl,signer,receiver,method,args,deposit=ONE_YOCTO,gas=GAS,callbackUrl,calls}){
+ const list=calls||[{method,args,deposit,gas}];
+ const transaction={signerId:signer,receiverId:receiver,actions:list.map(c=>({type:'FunctionCall',params:{methodName:c.method,args:c.args,gas:String(c.gas??GAS),deposit:String(c.deposit??ONE_YOCTO)}}))};
  if(!walletUrl)return {transaction,url:null};
  const block=await provider.viewBlock({finality:'final'});
- const tx=createTransaction(signer,KeyPair.fromRandom('ed25519').getPublicKey(),receiver,0n,[actions.functionCall(method,args,gas,BigInt(deposit))],baseDecode(block.header.hash));
+ const tx=createTransaction(signer,KeyPair.fromRandom('ed25519').getPublicKey(),receiver,0n,list.map(c=>actions.functionCall(c.method,c.args,BigInt(c.gas??GAS),BigInt(c.deposit??ONE_YOCTO))),baseDecode(block.header.hash));
  return {transaction,url:`${walletUrl}/sign?${new URLSearchParams({transactions:Buffer.from(encodeTransaction(tx)).toString('base64'),callbackUrl})}`};
 }
 // Checks on-chain that `signer` really sent this call and that it succeeded. A wallet callback alone proves nothing.
@@ -64,7 +70,7 @@ export async function verifySignIn(provider,{accountId,publicKey,signature,messa
  return accountId;
 }
 // Publishes the vault code once as a global contract pinned by hash, then deploys the factory, which ends with no keys.
-export async function deployPlatform({rpcUrl,operator,factoryName='paygate',factoryNear='25'}){
+export async function deployPlatform({rpcUrl,operator,factoryName='paygate',factoryNear='28'}){
  const factory=`${factoryName}.${operator.accountId}`,key=KeyPair.fromRandom('ed25519');
  const vaultCode=new Uint8Array(await readFile(CODE)),factoryCode=new Uint8Array(await readFile(FACTORY_CODE)),vaultHash=baseEncode(createHash('sha256').update(vaultCode).digest());
  await operator.createAccount({newAccountId:factory,publicKey:key.getPublicKey(),nearToTransfer:nearToYocto(factoryNear)});
@@ -80,7 +86,7 @@ export function factoryClient({rpcUrl,network,factory,walletUrl}){
   provider,network,factory,walletUrl:wallet,
   config:()=>provider.callFunction({contractId:factory,method:'get_config',args:{},blockQuery:{finality:'optimistic'}}),
   exists:id=>provider.viewAccount({accountId:id,blockQuery:{finality:'optimistic'}}).then(()=>true,e=>/does not exist|UNKNOWN_ACCOUNT/i.test(String(e?.message||e))?false:Promise.reject(e)),
-  createLink:({owner,name,agentKey,limits,payees,fund,callbackUrl})=>walletLink({provider,walletUrl:wallet,signer:owner,receiver:factory,method:'create_vault',args:{name,agent_key:agentKey,limits,recipients:payees},deposit:toYocto(fund),gas:200n*TGAS,callbackUrl}),
+  createLink:({owner,name,agentKey,limits,payees,fund,token,callbackUrl})=>walletLink({provider,walletUrl:wallet,signer:owner,receiver:factory,method:'create_vault',args:{name,agent_key:agentKey,limits,recipients:payees,...(token?{token}:{})},deposit:toYocto(fund),gas:200n*TGAS,callbackUrl}),
   // Without a transaction hash: the vault counts if the chain shows it owned by this customer, with this agent,
   // and the agent's only key is the one PayGate issued, limited to request_payment on that vault.
   async findCreated({owner,name,agentKey}){
@@ -135,16 +141,21 @@ export function vaultClient(config){
  }
  const call=(method,args)=>relayer?relayed(method,args).catch(e=>/does not allow|panicked|Smart contract|already been paid|not on the allowlist|limit|frozen|Invalid job/i.test(reason(e))?Promise.reject(e):agentAccount.callFunctionRaw({contractId:vault,methodName:method,args,gas:GAS})):agentAccount.callFunctionRaw({contractId:vault,methodName:method,args,gas:GAS});
  let queue=Promise.resolve();const serial=fn=>{const run=queue.then(fn);queue=run.catch(()=>{});return run};
- const view=(method,args={})=>provider.callFunction({contractId:vault,method,args,blockQuery:{finality:'optimistic'}});
+ const view=(method,args={})=>provider.callFunction({contractId:vault,method,args,blockQuery:{finality:'optimistic'}}),dec=config.token?(config.decimals??6):24;
  return {
   network,vault,owner,agent,provider,walletUrl:config.walletUrl||null,relayed:Boolean(relayer),
   explorer:hash=>net.explorer&&hash?net.explorer+hash:null,
-  async policy(){const p=await view('get_policy');return {...p,spendable:toNear(p.balance),spent:toNear(p.spent_in_window),limits:{auto:toNear(p.limits.auto_limit),max:toNear(p.limits.max_payment),daily:toNear(p.limits.daily_limit)}}},
+  token:config.token||null,decimals:dec,symbol:config.token?(config.symbol||'USDC'):'NEAR',
+  units:n=>toUnits(n,dec),fromUnits:y=>fromUnits(y,dec),
+  async policy(){const p=await view('get_policy');return {...p,spendable:fromUnits(p.balance,dec),spent:fromUnits(p.spent_in_window,dec),limits:{auto:fromUnits(p.limits.auto_limit,dec),max:fromUnits(p.limits.max_payment,dec),daily:fromUnits(p.limits.daily_limit,dec)}}},
+  // Token vaults pay only accounts registered with the token contract; NEAR vaults need no registration.
+  async registered(accounts){if(!config.token)return Object.fromEntries(accounts.map(a=>[a,true]));return Object.fromEntries(await Promise.all(accounts.map(async a=>[a,Boolean(await provider.callFunction({contractId:config.token,method:'storage_balance_of',args:{account_id:a},blockQuery:{finality:'optimistic'}}).catch(()=>null))])))},
+  tokenLink(calls,callbackUrl){return walletLink({provider,walletUrl:this.walletUrl,signer:owner,receiver:config.token,calls,callbackUrl})},
   pending:()=>view('get_pending'),
   recipients:()=>view('get_recipients'),
   // Asks as the agent. Small payments go out at once; larger ones wait for the owner's wallet.
   async request(job,key){
-   const amount=toYocto(job.amount);let result,id,status;
+   const amount=toUnits(job.amount,dec);let result,id,status;
    try{
     result=await serial(()=>call('request_payment',{recipient:job.payee,amount,job_id:key}));
     ({id,status}=JSON.parse(Buffer.from(result.status.SuccessValue,'base64').toString()));

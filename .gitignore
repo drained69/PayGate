@@ -5,3 +5,4 @@ test-results/
 playwright-report/
 contract/target/
 contract/factory/target/
+contract/test-token/target/

@@ -10,7 +10,7 @@ if(!e.NEAR_OPERATOR_ACCOUNT)stop(`Set NEAR_OPERATOR_ACCOUNT to the ${network} ac
 const hidden=question=>new Promise(done=>{const input=process.stdin;let key='';process.stdout.write(question);input.setRawMode?.(true);input.resume();input.setEncoding('utf8');input.on('data',function on(c){for(const ch of c){if(ch==='\r'||ch==='\n'){input.setRawMode?.(false);input.pause();input.off('data',on);process.stdout.write('\n');return done(key.trim())}if(ch==='\u0003')process.exit(1);if(ch==='\u007f')key=key.slice(0,-1);else key+=ch}})});
 e.NEAR_OPERATOR_KEY||=await hidden(`Private key of ${e.NEAR_OPERATOR_ACCOUNT} (starts with ed25519:, hidden): `);
 if(!/^ed25519:[1-9A-HJ-NP-Za-km-z]{60,}$/.test(e.NEAR_OPERATOR_KEY))stop('That is not a NEAR private key. It starts with ed25519: and has no spaces. Export it from your wallet, for example MyNearWallet → Settings → Security & Recovery → Export private key.');
-const rpcUrl=e.NEAR_RPC_URL||NETWORKS[network].rpcUrl,name=e.FACTORY_NAME||'paygate',fund=e.FACTORY_FUND||'25';
+const rpcUrl=e.NEAR_RPC_URL||NETWORKS[network].rpcUrl,name=e.FACTORY_NAME||'paygate',fund=e.FACTORY_FUND||'28';
 const operator=accountFor(rpcUrl,e.NEAR_OPERATOR_ACCOUNT,e.NEAR_OPERATOR_KEY),factory=`${name}.${operator.accountId}`;
 // A vault name may be 32 characters and its agent adds "-agent.", so longer factory names would leave no room.
 if(factory.length>25)stop(`${factory} is ${factory.length} characters. Keep the factory account at 25 or fewer, for example with a shorter FACTORY_NAME.`);

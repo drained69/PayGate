@@ -1,10 +1,13 @@
-//! PayGate spending vault for an AI agent. The agent may only ask for payments; the
+//! PayGate spending vault for an AI agent. It holds NEAR, or one NEP-141 token such as USDC when
+//! created with `token`; limits and amounts are then in that token's smallest units. The agent may only ask for payments; the
 //! rules below decide. Owner methods need one attached yoctoNEAR, which a
 //! function-call access key cannot send, so a leaked agent key cannot use them.
+use near_sdk::json_types::U128;
+use near_sdk::serde_json::json;
 use near_sdk::store::{IterableMap, IterableSet, LookupSet};
 use near_sdk::{
     assert_one_yocto, env, near, require, AccountId, Gas, NearToken, PanicOnDefault, Promise,
-    PromiseError,
+    PromiseError, PromiseOrValue,
 };
 
 const WINDOW_MS: u64 = 86_400_000;
@@ -12,6 +15,7 @@ const MAX_PENDING: u32 = 20;
 const MAX_REQUESTS_PER_WINDOW: u32 = 50;
 const MAX_JOB_ID_LEN: usize = 64;
 const CALLBACK_GAS: Gas = Gas::from_tgas(5);
+const FT_TRANSFER_GAS: Gas = Gas::from_tgas(15);
 
 #[near(serializers = [json, borsh])]
 #[derive(Clone)]
@@ -48,6 +52,8 @@ pub struct Policy {
     pub spent_in_window: NearToken,
     pub window_ends_ms: u64,
     pub balance: NearToken,
+    /// The NEP-141 token the vault pays in, or none for NEAR.
+    pub token: Option<AccountId>,
 }
 
 #[near(event_json(standard = "paygate_vault"))]
@@ -78,6 +84,9 @@ pub struct Vault {
     recipients: IterableSet<AccountId>,
     pending: IterableMap<u64, Payment>,
     used_jobs: LookupSet<String>,
+    token: Option<AccountId>,
+    /// Token units the vault holds, credited only through `ft_on_transfer` from `token`.
+    token_balance: u128,
 }
 
 #[near]
@@ -85,7 +94,13 @@ impl Vault {
     /// Callable only by the vault itself or by the account that created it, such as
     /// the PayGate factory, which initializes it in the same receipt that creates it.
     #[init]
-    pub fn new(owner: AccountId, agent: AccountId, limits: Limits, recipients: Option<Vec<AccountId>>) -> Self {
+    pub fn new(
+        owner: AccountId,
+        agent: AccountId,
+        limits: Limits,
+        recipients: Option<Vec<AccountId>>,
+        token: Option<AccountId>,
+    ) -> Self {
         let caller = env::predecessor_account_id();
         let me = env::current_account_id();
         require!(caller == me || me.is_sub_account_of(&caller), "Only the vault or its creator can initialize it");
@@ -103,6 +118,8 @@ impl Vault {
             recipients: IterableSet::new(b"r"),
             pending: IterableMap::new(b"p"),
             used_jobs: LookupSet::new(b"j"),
+            token,
+            token_balance: 0,
         };
         for recipient in recipients.unwrap_or_default() {
             vault.recipients.insert(recipient);
@@ -112,6 +129,16 @@ impl Vault {
 
     #[payable]
     pub fn fund(&mut self) {}
+
+    /// NEP-141 receiver. Credits deposits of the vault's token from anyone; refuses other tokens by returning them.
+    pub fn ft_on_transfer(&mut self, sender_id: AccountId, amount: U128, msg: String) -> PromiseOrValue<U128> {
+        let _ = (sender_id, msg);
+        if self.token.as_ref() != Some(&env::predecessor_account_id()) {
+            return PromiseOrValue::Value(amount);
+        }
+        self.token_balance = self.token_balance.saturating_add(amount.0);
+        PromiseOrValue::Value(U128(0))
+    }
 
     pub fn request_payment(
         &mut self,
@@ -210,7 +237,23 @@ impl Vault {
     pub fn withdraw(&mut self, amount: NearToken) -> Promise {
         self.assert_owner();
         require!(amount <= self.available(), "Insufficient vault balance");
-        Promise::new(self.owner.clone()).transfer(amount)
+        match self.token.clone() {
+            None => Promise::new(self.owner.clone()).transfer(amount),
+            Some(token) => {
+                self.token_balance -= amount.as_yoctonear();
+                ft_transfer(token, self.owner.clone(), amount, "PayGate withdrawal".into()).then(
+                    Self::ext(env::current_account_id()).with_static_gas(CALLBACK_GAS).on_withdraw(amount),
+                )
+            }
+        }
+    }
+
+    /// Restores the token ledger if a token withdrawal failed.
+    #[private]
+    pub fn on_withdraw(&mut self, amount: NearToken, #[callback_result] result: Result<(), PromiseError>) {
+        if result.is_err() {
+            self.token_balance = self.token_balance.saturating_add(amount.as_yoctonear());
+        }
     }
 
     #[private]
@@ -223,6 +266,9 @@ impl Vault {
         #[callback_result] result: Result<(), PromiseError>,
     ) {
         if result.is_err() {
+            if self.token.is_some() {
+                self.token_balance = self.token_balance.saturating_add(amount.as_yoctonear());
+            }
             if window_start_ms == self.window_start_ms {
                 self.spent_in_window = self.spent_in_window.saturating_sub(amount);
             }
@@ -241,6 +287,7 @@ impl Vault {
             spent_in_window: if window_over { NearToken::from_yoctonear(0) } else { self.spent_in_window },
             window_ends_ms: self.window_start_ms + WINDOW_MS,
             balance: self.available(),
+            token: self.token.clone(),
         }
     }
 
@@ -268,8 +315,11 @@ impl Vault {
         }
     }
 
-    /// Balance not locked for contract storage.
+    /// Spendable balance: token units for a token vault, otherwise NEAR not locked for storage.
     fn available(&self) -> NearToken {
+        if self.token.is_some() {
+            return NearToken::from_yoctonear(self.token_balance);
+        }
         env::account_balance().saturating_sub(env::storage_byte_cost().saturating_mul(env::storage_usage() as u128))
     }
 
@@ -280,12 +330,25 @@ impl Vault {
         require!(amount <= self.available(), "Insufficient vault balance");
         self.spent_in_window = spent;
         Event::PaymentSent { id, recipient: recipient.clone(), amount, job_id: job_id.clone() }.emit();
-        Promise::new(recipient).transfer(amount).then(
+        let transfer = match self.token.clone() {
+            None => Promise::new(recipient).transfer(amount),
+            Some(token) => {
+                self.token_balance -= amount.as_yoctonear();
+                ft_transfer(token, recipient, amount, job_id.clone())
+            }
+        };
+        transfer.then(
             Self::ext(env::current_account_id())
                 .with_static_gas(CALLBACK_GAS)
                 .on_payout(id, amount, job_id, self.window_start_ms),
         ).detach();
     }
+}
+
+/// NEP-141 transfer of `amount` token units; the token requires exactly one yoctoNEAR.
+fn ft_transfer(token: AccountId, receiver_id: AccountId, amount: NearToken, memo: String) -> Promise {
+    let args = json!({ "receiver_id": receiver_id, "amount": U128(amount.as_yoctonear()), "memo": memo });
+    Promise::new(token).function_call("ft_transfer", args.to_string().into_bytes(), NearToken::from_yoctonear(1), FT_TRANSFER_GAS)
 }
 
 fn assert_limits(limits: &Limits) {
@@ -321,6 +384,7 @@ mod tests {
             acct("owner.near"),
             acct("agent.near"),
             Limits { auto_limit: near(1), max_payment: near(5), daily_limit: near(8) },
+            None,
             None,
         );
         call("owner.near", 1);
@@ -503,7 +567,7 @@ mod tests {
             .current_account_id(acct("v1.factory.near"))
             .predecessor_account_id(acct("factory.near"))
             .build());
-        let v = Vault::new(acct("owner.near"), acct("v1-agent.factory.near"), limits(), Some(vec![acct("worker.near")]));
+        let v = Vault::new(acct("owner.near"), acct("v1-agent.factory.near"), limits(), Some(vec![acct("worker.near")]), None);
         assert_eq!(v.get_recipients(), vec![acct("worker.near")]);
         assert_eq!(v.get_policy().owner, acct("owner.near"));
     }
@@ -515,7 +579,7 @@ mod tests {
             .current_account_id(acct("v1.factory.near"))
             .predecessor_account_id(acct("attacker.near"))
             .build());
-        Vault::new(acct("attacker.near"), acct("agent.near"), limits(), None);
+        Vault::new(acct("attacker.near"), acct("agent.near"), limits(), None, None);
     }
 
     #[test]
@@ -525,7 +589,81 @@ mod tests {
             .current_account_id(acct("v1.factory.near"))
             .predecessor_account_id(acct("near"))
             .build());
-        Vault::new(acct("owner.near"), acct("agent.near"), limits(), None);
+        Vault::new(acct("owner.near"), acct("agent.near"), limits(), None, None);
+    }
+
+    fn usdc(n: u128) -> NearToken {
+        NearToken::from_yoctonear(n * 1_000_000)
+    }
+    fn token_vault() -> Vault {
+        call("vault.near", 0);
+        let mut v = Vault::new(
+            acct("owner.near"),
+            acct("agent.near"),
+            Limits { auto_limit: usdc(10), max_payment: usdc(50), daily_limit: usdc(80) },
+            Some(vec![acct("worker.near")]),
+            Some(acct("usdc.near")),
+        );
+        call("usdc.near", 0);
+        let kept = v.ft_on_transfer(acct("owner.near"), U128(usdc(100).as_yoctonear()), String::new());
+        assert!(matches!(kept, PromiseOrValue::Value(U128(0))));
+        call("agent.near", 0);
+        v
+    }
+
+    #[test]
+    fn token_deposits_are_credited_only_from_the_vault_token() {
+        let mut v = token_vault();
+        assert_eq!(v.get_policy().balance, usdc(100));
+        assert_eq!(v.get_policy().token, Some(acct("usdc.near")));
+        call("fake-usdc.near", 0);
+        let returned = v.ft_on_transfer(acct("attacker.near"), U128(999), String::new());
+        assert!(matches!(returned, PromiseOrValue::Value(U128(999))));
+        assert_eq!(v.get_policy().balance, usdc(100));
+    }
+
+    #[test]
+    fn token_payments_debit_the_ledger_and_follow_the_limits() {
+        let mut v = token_vault();
+        assert_eq!(v.request_payment(acct("worker.near"), usdc(10), "a".into()).status, "sent");
+        assert_eq!(v.get_policy().balance, usdc(90));
+        let held = v.request_payment(acct("worker.near"), usdc(30), "b".into());
+        assert_eq!(held.status, "pending");
+        call("owner.near", 1);
+        v.approve_payment(held.id);
+        assert_eq!(v.get_policy().balance, usdc(60));
+        assert_eq!(v.get_policy().spent_in_window, usdc(40));
+    }
+
+    #[test]
+    #[should_panic(expected = "Insufficient vault balance")]
+    fn token_payments_cannot_exceed_the_token_balance() {
+        let mut v = token_vault();
+        call("owner.near", 1);
+        v.set_limits(Limits { auto_limit: usdc(500), max_payment: usdc(500), daily_limit: usdc(500) });
+        call("agent.near", 0);
+        v.request_payment(acct("worker.near"), usdc(101), "a".into());
+    }
+
+    #[test]
+    fn a_failed_token_transfer_restores_the_ledger() {
+        let mut v = token_vault();
+        v.request_payment(acct("worker.near"), usdc(10), "a".into());
+        call("vault.near", 0);
+        v.on_payout(1, usdc(10), "a".into(), v.window_start_ms, Err(PromiseError::Failed));
+        assert_eq!(v.get_policy().balance, usdc(100));
+        assert_eq!(v.get_policy().spent_in_window, usdc(0));
+    }
+
+    #[test]
+    fn token_withdrawals_debit_and_restore_on_failure() {
+        let mut v = token_vault();
+        call("owner.near", 1);
+        let _ = v.withdraw(usdc(40));
+        assert_eq!(v.get_policy().balance, usdc(60));
+        call("vault.near", 0);
+        v.on_withdraw(usdc(40), Err(PromiseError::Failed));
+        assert_eq!(v.get_policy().balance, usdc(100));
     }
 
     #[test]

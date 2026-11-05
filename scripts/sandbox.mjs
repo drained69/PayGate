@@ -1,5 +1,6 @@
+import {readFile} from 'node:fs/promises';
 import {Sandbox,DEFAULT_ACCOUNT_ID,DEFAULT_PRIVATE_KEY} from 'near-sandbox';
-import {KeyPair,nearToYocto} from 'near-api-js';
+import {KeyPair,nearToYocto,actions} from 'near-api-js';
 import {accountFor,provision,deployPlatform} from '../chain.mjs';
 // near-sdk 5.30 imports host functions added in nearcore 2.14, so the default 2.13 sandbox cannot run the contract.
 const VERSION='2.14.0';
@@ -22,6 +23,10 @@ export function startPlatform(){
   const customers={[`alice.${DEFAULT_ACCOUNT_ID}`]:await account(operator,`alice.${DEFAULT_ACCOUNT_ID}`,'20'),[`bob.${DEFAULT_ACCOUNT_ID}`]:await account(operator,`bob.${DEFAULT_ACCOUNT_ID}`,'20')};
   const payee=`payee.${DEFAULT_ACCOUNT_ID}`;await account(operator,payee,'0.01');
   const relayer={accountId:`relayer.${DEFAULT_ACCOUNT_ID}`,key:await account(operator,`relayer.${DEFAULT_ACCOUNT_ID}`,'5')};
-  return {sandbox,operator,factory,customers,payee,relayer,rpcUrl:sandbox.rpcUrl};
+  // A test-only USDC (6 decimals) whose whole supply belongs to carol, the customer who tests USDC vaults.
+  const carol=`carol.${DEFAULT_ACCOUNT_ID}`;customers[carol]=await account(operator,carol,'20');
+  const usdc=`usdc.${DEFAULT_ACCOUNT_ID}`,usdcAdmin=accountFor(sandbox.rpcUrl,usdc,await account(operator,usdc,'5'));
+  await usdcAdmin.signAndSendTransaction({receiverId:usdc,actions:[actions.deployContract(new Uint8Array(await readFile(new URL('./fixtures/test-usdc.wasm',import.meta.url)))),actions.functionCall('new',{owner_id:carol,total_supply:'1000000000000'},30000000000000n,0n)]});
+  return {sandbox,operator,factory,customers,payee,relayer,usdc,rpcUrl:sandbox.rpcUrl};
  });
 }

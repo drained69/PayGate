@@ -38,7 +38,7 @@ export function transition(current,c){
   else if(c.action==='paid'){
    if(!['Review','Awaiting approval'].includes(j.status))throw Error('Job must be awaiting review.');
    j.status='Paid';j.paidAt=new Date().toISOString();
-   const r={id:randomUUID(),job:j.title,jobId:j.id,payee:j.payee,amount:j.amount,currency:'NEAR',date:j.paidAt,inference:j.inference||null,deliverySource:j.source||null,usdEstimate:j.quote||null,settlement:c.settlement,previousHash:s.receipts[0]?.hash||null};
+   const r={id:randomUUID(),job:j.title,jobId:j.id,payee:j.payee,amount:j.amount,currency:c.settlement?.currency||'NEAR',date:j.paidAt,inference:j.inference||null,deliverySource:j.source||null,usdEstimate:j.quote||null,settlement:c.settlement,previousHash:s.receipts[0]?.hash||null};
    s.receipts.unshift({...r,hash:hash(r)});
   }else throw Error('Unknown action.');
  }

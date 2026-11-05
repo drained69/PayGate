@@ -10,7 +10,7 @@ PayGate is a public, non-custodial service on NEAR. Anyone can sign in with thei
 
 [How it works](#how-it-works) · [Use PayGate](#using-paygate) · [Agent API](#agent-api-and-mcp) · [Run your own](#run-your-own-paygate) · [Security model](#security-model) · [Contracts](#contract-reference) · [HTTP API](#http-api)
 
-![Node.js 22.22+](https://img.shields.io/badge/node-%E2%89%A522.22-1b3158) ![NEAR](https://img.shields.io/badge/chain-NEAR-1b3158) ![Contract tests](https://img.shields.io/badge/contract%20tests-26%20passing-2f7d55) ![License: MIT](https://img.shields.io/badge/license-MIT-1b3158)
+![Node.js 22.22+](https://img.shields.io/badge/node-%E2%89%A522.22-1b3158) ![NEAR](https://img.shields.io/badge/chain-NEAR-1b3158) ![Contract tests](https://img.shields.io/badge/contract%20tests-31%20passing-2f7d55) ![License: MIT](https://img.shields.io/badge/license-MIT-1b3158)
 
 ![PayGate homepage](docs/images/home.jpg)
 
@@ -69,6 +69,7 @@ A worst-case attack demo hijacks the agent and uses its real key to try 12 ways 
 | **On-chain rules** | Payee allowlist, automatic, per-payment and daily limits, one payment per job, held payments, freeze, and withdrawal that works while frozen. |
 | **Wallet approvals** | Approve, reject, freeze, change limits, add or remove payees, withdraw, each signed in the customer's connected wallet and checked on-chain. Other wallets and NEAR CLI work by pasting the transaction hash. |
 | **Jobs workflow** | Create, deliver, review, pay or hold, approve or reject, cancel. Budgets are checked against limits and against funds already committed. |
+| **USDC budgets** | A vault can hold and pay in USDC (Circle's native USDC on mainnet, Circle's testnet USDC on testnet) instead of NEAR, with limits in dollars. Owners deposit USDC from Treasury and register payees with USDC in one click; a transfer to an unregistered payee is refunded to the vault. |
 | **Gas relayer** | Optional. Agents sign meta-transactions (NEP-366) and an operator relayer account pays the gas, so an agent's allowance never runs out. NEAR still enforces the agent key's restriction on every relayed call. |
 | **Alerts** | Signed webhooks for Slack, Discord or any https endpoint, and Telegram, when a payment waits for approval, when one is paid, and when an agent delivers work. Each alert links straight to the job. |
 | **Agent API and MCP** | Customers create scoped API keys so their own AI agents can read the vault, create jobs, deliver work and request payment over REST (`/api/v1`) or as MCP tools (`/mcp`). Agents can never approve, freeze, change limits or payees, or withdraw. |
@@ -232,10 +233,10 @@ Run once, from your own machine, with an operator account. The operator key is u
 
 | Cost | Amount |
 | --- | --- |
-| Publishing the vault code as a global contract (burned) | about 20.7 NEAR |
+| Publishing the vault code as a global contract (burned) | about 23.4 NEAR |
 | Storing the factory code (locked) | about 1.8 NEAR |
 | Buffer left in the factory for refunds | about 2.5 NEAR |
-| **Recommended `FACTORY_FUND`** | **25 NEAR** |
+| **Recommended `FACTORY_FUND`** | **28 NEAR** |
 
 Without the confirmation flag, the script checks everything and prints a summary. It sends nothing.
 
@@ -292,12 +293,13 @@ npm run check:deployed -- https://your-domain.up.railway.app
 | `PUBLIC_URL` | none | Public https address. Turns on hosted mode. `RAILWAY_PUBLIC_DOMAIN` also works |
 | `NEAR_RPC_URL` | FastNEAR free RPC | RPC endpoint. Several comma-separated URLs fail over to each other. Use a dedicated provider for a public mainnet service. Required for `sandbox` |
 | `NEAR_AI_MODEL` | `qwen/qwen3.5-397b-a17b` | Model for inference and attestation |
+| `PAYGATE_USDC` | Circle USDC on mainnet and testnet | The USDC token account for USDC vaults. Required on a local node |
 | `TELEGRAM_BOT_TOKEN` | none | Optional. A bot from @BotFather; turns on Telegram alerts |
 | `PAYGATE_RELAYER_ACCOUNT`, `PAYGATE_RELAYER_KEY` | none | Optional gas relayer: an account holding only gas money that pays for agents' payment requests |
 | `DATA_DIR` | `./data` | Local data folder |
 | `PORT`, `HOST` | `3000`; `127.0.0.1` locally, `0.0.0.0` hosted | Listen address |
 
-Platform deployment only: `NEAR_OPERATOR_ACCOUNT`, `NEAR_OPERATOR_KEY`, `FACTORY_NAME` (default `paygate`), `FACTORY_FUND` (default `25`).
+Platform deployment only: `NEAR_OPERATOR_ACCOUNT`, `NEAR_OPERATOR_KEY`, `FACTORY_NAME` (default `paygate`), `FACTORY_FUND` (default `28`).
 
 ## Security model
 
@@ -337,12 +339,13 @@ Source: [contract/src/lib.rs](contract/src/lib.rs). Built: `contract/res/paygate
 
 | Method | Caller | Description |
 | --- | --- | --- |
-| `new(owner, agent, limits, recipients?)` | The vault or its creator | Initializes, optionally with first payees |
+| `new(owner, agent, limits, recipients?, token?)` | The vault or its creator | Initializes, optionally with first payees and a NEP-141 token such as USDC |
+| `ft_on_transfer(sender_id, amount, msg)` | The vault's token contract | Credits token deposits made with `ft_transfer_call`; other tokens are returned |
 | `fund()` | Anyone, payable | Adds NEAR |
 | `request_payment(recipient, amount, job_id)` | Agent | Sends at once at or below `auto_limit`, otherwise holds. Returns `{id, status}` |
 | `approve_payment(id)` / `reject_payment(id)` | Owner, 1 yocto | Releases or drops a held payment |
 | `set_frozen`, `set_limits`, `set_recipient`, `set_agent` | Owner, 1 yocto | Configuration |
-| `withdraw(amount)` | Owner, 1 yocto | Sends NEAR to the owner, even while frozen |
+| `withdraw(amount)` | Owner, 1 yocto | Sends NEAR, or the vault's token, to the owner, even while frozen |
 | `get_policy()`, `get_pending()`, `get_recipients()` | View | State |
 
 Events (`paygate_vault`): `payment_sent`, `payment_pending`, `payment_rejected`, `payment_failed`, `freeze_changed`. Constants: 24-hour window, 20 held payments, 50 requests per window, job ids up to 64 characters.
@@ -354,8 +357,8 @@ Source: [contract/factory/src/lib.rs](contract/factory/src/lib.rs). Built: `cont
 | Method | Caller | Description |
 | --- | --- | --- |
 | `new(vault_code)` | The factory itself, once | Pins the vault code hash |
-| `create_vault(name, agent_key, limits, recipients)` | Anyone, at least 0.4 NEAR | Creates `name.factory` owned by the caller and `name-agent.factory` with one restricted key |
-| `get_config()` | View | Code hash, agent funding, minimum deposit |
+| `create_vault(name, agent_key, limits, recipients, token?)` | Anyone, at least 0.4 NEAR | Creates `name.factory` owned by the caller and `name-agent.factory` with one restricted key |
+| `get_config()` | View | Code hash, agent funding, minimum deposit, token support |
 
 Names are 2–32 lowercase letters, digits or single dashes and cannot end in `-agent`. Events (`paygate_factory`): `vault_created`, `vault_failed`, `agent_failed`.
 
@@ -384,7 +387,7 @@ POST requests need the header `X-PayGate: 1`. Account endpoints need a session.
 | Command | What it checks | Needs |
 | --- | --- | --- |
 | `npm test` | 21 tests: job rules, workspace caps, NEAR services, encryption, NEP-413, server security, rate limits, startup refusals, file store | Nothing |
-| `cd contract && cargo test` | 21 vault tests | Rust 1.97.1 |
+| `cd contract && cargo test` | 26 vault tests, including USDC deposits, payments, refunds and withdrawals | Rust 1.97.1 |
 | `cd contract/factory && cargo test` | 5 factory tests | Rust 1.97.1 |
 | `npm run test:postgres` | Schema, row-locked concurrent updates, rollback, sessions, nonces, deletion, server start | Docker or `DATABASE_URL` |
 | `npm run demo:attack` | 12 attacks against a real local node | NEAR sandbox |
@@ -400,6 +403,7 @@ POST requests need the header `X-PayGate: 1`. Account endpoints need a session.
 - forged approvals and injected results;
 - signed webhook and Telegram alerts for held and paid payments;
 - every agent payment relayed (NEP-366), with the agent's allowance untouched;
+- a USDC vault: payee registration, deposit, payment and withdrawal in USDC;
 - agent API keys over REST and MCP, read-only and revoked keys;
 - isolation between two customers, taken vault names, and forged and replayed sign-ins;
 - data deletion and the mobile layout.

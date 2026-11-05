@@ -31,6 +31,8 @@ pub struct Config {
     pub vault_code: Base58CryptoHash,
     pub agent_fund: NearToken,
     pub min_deposit: NearToken,
+    /// True when vaults can hold a NEP-141 token such as USDC.
+    pub tokens: bool,
 }
 
 #[near(event_json(standard = "paygate_factory"))]
@@ -58,7 +60,8 @@ impl Factory {
     }
 
     /// Creates `<name>.<factory>` owned by the caller and `<name>-agent.<factory>`, whose only
-    /// key is `agent_key`, limited to `request_payment` on the new vault.
+    /// key is `agent_key`, limited to `request_payment` on the new vault. With `token`, the vault
+    /// holds and pays in that NEP-141 token, such as USDC, instead of NEAR.
     #[payable]
     pub fn create_vault(
         &mut self,
@@ -66,6 +69,7 @@ impl Factory {
         agent_key: PublicKey,
         limits: Limits,
         recipients: Vec<AccountId>,
+        token: Option<AccountId>,
     ) -> Promise {
         let owner = env::predecessor_account_id();
         let deposit = env::attached_deposit();
@@ -78,7 +82,7 @@ impl Factory {
         let me = env::current_account_id();
         let vault: AccountId = format!("{name}.{me}").parse().unwrap_or_else(|_| env::panic_str("Invalid vault name"));
         let agent: AccountId = format!("{name}-agent.{me}").parse().unwrap_or_else(|_| env::panic_str("Invalid vault name"));
-        let args = json!({ "owner": owner, "agent": agent, "limits": limits, "recipients": recipients });
+        let args = json!({ "owner": owner, "agent": agent, "limits": limits, "recipients": recipients, "token": token });
         // Only the minimum travels with the creation. If it fails, that much is refunded to the factory
         // in a later receipt, which the factory's buffer covers; the rest of the deposit never left.
         Promise::new(vault.clone())
@@ -134,6 +138,7 @@ impl Factory {
             vault_code: self.vault_code.into(),
             agent_fund: AGENT_FUND,
             min_deposit: MIN_VAULT_FUND.saturating_add(AGENT_FUND),
+            tokens: true,
         }
     }
 }
@@ -190,26 +195,26 @@ mod tests {
     #[test]
     fn creating_a_vault_returns_a_promise() {
         let mut f = factory(NearToken::from_near(1));
-        let _ = f.create_vault("acme".into(), key(), limits(), vec!["worker.near".parse().unwrap()]);
+        let _ = f.create_vault("acme".into(), key(), limits(), vec!["worker.near".parse().unwrap()], None);
         assert_eq!(f.get_config().min_deposit, NearToken::from_millinear(400));
     }
 
     #[test]
     #[should_panic(expected = "Attach at least 0.4 NEAR")]
     fn too_small_a_deposit_is_refused() {
-        let _ = factory(NearToken::from_millinear(399)).create_vault("acme".into(), key(), limits(), vec![]);
+        let _ = factory(NearToken::from_millinear(399)).create_vault("acme".into(), key(), limits(), vec![], None);
     }
 
     #[test]
     #[should_panic(expected = "lowercase letters")]
     fn agent_names_cannot_be_taken_as_vaults() {
-        let _ = factory(NearToken::from_near(1)).create_vault("acme-agent".into(), key(), limits(), vec![]);
+        let _ = factory(NearToken::from_near(1)).create_vault("acme-agent".into(), key(), limits(), vec![], None);
     }
 
     #[test]
     #[should_panic(expected = "At most 20 payees")]
     fn payee_list_is_bounded() {
         let many = (0..21).map(|i| format!("p{i}.near").parse().unwrap()).collect();
-        let _ = factory(NearToken::from_near(1)).create_vault("acme".into(), key(), limits(), many);
+        let _ = factory(NearToken::from_near(1)).create_vault("acme".into(), key(), limits(), many, None);
     }
 }

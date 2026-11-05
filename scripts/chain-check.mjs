@@ -20,7 +20,7 @@ const stub=await startStub(),port=3097,url=`http://localhost:${port}`;
 const app=await startChainApp(port,{ONECLICK_URL:stub.url,NEAR_AI_URL:stub.url,PAYGATE_ALLOW_PRIVATE_WEBHOOKS:'1',TELEGRAM_BOT_TOKEN:'123:test',TELEGRAM_API_URL:`http://127.0.0.1:${tgApi.address().port}`});
 let browser;
 try{
- const {payee,factory,customers}=app,[alice,bob]=Object.keys(customers),vault=`acme.${factory}`,agent=`acme-agent.${factory}`;
+ const {payee,factory,customers,usdc}=app,[alice,bob,carol]=Object.keys(customers),vault=`acme.${factory}`,agent=`acme-agent.${factory}`;
  const provider=new JsonRpcProvider({url:app.rpcUrl}),balance=async id=>BigInt((await provider.viewAccount({accountId:id,blockQuery:{finality:'optimistic'}})).amount);
  browser=await chromium.launch(process.env.CHROME_PATH?{executablePath:process.env.CHROME_PATH}:{});
  const errors=[],open=async()=>{const context=await browser.newContext({viewport:{width:1280,height:900}}),page=await context.newPage();page.on('pageerror',e=>errors.push(e.stack||e.message));page.on('dialog',d=>d.accept());return page};
@@ -141,6 +141,24 @@ try{
  // A large deposit on a taken name comes back in full, even though it is far larger than the factory's buffer.
  const bobBefore=await balance(bob);await accountFor(app.rpcUrl,bob,customers[bob]).callFunctionRaw({contractId:factory,methodName:'create_vault',args:{name:'acme',agent_key:KeyPair.fromRandom('ed25519').getPublicKey().toString(),limits:{auto_limit:toYocto(0.1),max_payment:toYocto(0.5),daily_limit:toYocto(1)},recipients:[]},deposit:BigInt(toYocto(10)),gas:200000000000000n});
  let lost;for(let i=0;i<15;i++){lost=bobBefore-await balance(bob);if(lost<BigInt(toYocto(0.01)))break;await new Promise(d=>setTimeout(d,1000))}assert.ok(lost<BigInt(toYocto(0.01)),'a failed creation must be refunded');
+ // USDC budgets: a third customer creates a USDC vault, registers the payee, deposits, pays and withdraws in USDC.
+ const usdcBal=async id=>BigInt(await provider.callFunction({contractId:usdc,method:'ft_balance_of',args:{account_id:id},blockQuery:{finality:'optimistic'}}));
+ const cp=await open(),ctoast=t=>cp.locator('#toast').getByText(t,{exact:false}).waitFor();await cp.goto(url);await viaWallet(cp,()=>cp.locator('#signin').click(),carol);
+ const cf=cp.locator('#vault-form');await cf.getByLabel('Vault name').fill('carolco');await cf.getByLabel('Currency').selectOption('USDC');
+ assert.equal(await cf.locator('input[name=auto]').inputValue(),'10','USDC limits are suggested in USDC');await cf.getByLabel('Initial funding (NEAR)').fill('0.5');await cf.locator('textarea[name=payees]').fill(payee);
+ await viaWallet(cp,()=>cf.getByRole('button',{name:'Create vault in wallet'}).click());await ctoast('Your vault is live.');
+ const cvault=`carolco.${factory}`;assert.equal((await provider.callFunction({contractId:cvault,method:'get_policy',args:{},blockQuery:{finality:'optimistic'}})).token,usdc);
+ await cp.locator('nav [data-page="Controls"]').click();await viaWallet(cp,()=>cp.getByRole('button',{name:'Register in wallet'}).click());await cp.getByText('Registered').waitFor();
+ await cp.locator('nav [data-page="Treasury"]').click();await cp.getByLabel('Deposit USDC').fill('100');await viaWallet(cp,()=>cp.getByRole('button',{name:'Deposit in wallet'}).click());
+ await cp.locator('.stat').filter({hasText:'Vault balance'}).getByText('100').waitFor();assert.equal(await usdcBal(cvault),100_000_000n);
+ await cp.locator('nav [data-page="Jobs"]').click();await cp.getByRole('button',{name:'Create job'}).click();await cp.getByText('Budget (USDC)').waitFor();
+ await cp.getByLabel('Job title').fill('USDC job');await cp.getByLabel('Brief',{exact:true}).fill('Paid in USDC');await cp.getByLabel('Budget (USDC)').fill('5');await cp.locator('#job-form button[type=submit]').click();await cp.locator('#job-dialog').waitFor({state:'hidden'});
+ const crow=cp.getByRole('row').filter({hasText:'USDC job'});await crow.getByRole('button',{name:'Record delivery'}).click();await cp.getByLabel('Delivery').fill('Done');await cp.getByRole('button',{name:'Save delivery'}).click();await ctoast('Delivery recorded');
+ await crow.getByRole('button',{name:'Review & pay'}).click();await cp.getByText('≈ $5.00').waitFor();await cp.getByRole('button',{name:'Pay 5 USDC'}).click();await ctoast('Paid from the vault.');
+ assert.equal(await usdcBal(payee),5_000_000n);assert.equal(await usdcBal(cvault),95_000_000n);
+ assert.equal((await (await cp.request.get(url+'/api/state')).json()).workspace.receipts[0].currency,'USDC');
+ const carolBefore=await usdcBal(carol);await cp.locator('nav [data-page="Treasury"]').click();await cp.getByLabel('Amount (USDC)').fill('10');await viaWallet(cp,()=>cp.getByRole('button',{name:'Withdraw in wallet'}).click());
+ await ctoast('Wallet transaction confirmed');assert.equal(await usdcBal(carol)-carolBefore,10_000_000n);
  // Forged sign-ins: someone else's signature for an account, and a nonce used twice.
  const ch=await (await other.request.post(url+'/api/auth/challenge',{headers:{'X-PayGate':'1'},data:{}})).json(),payload={message:ch.message,nonce:Buffer.from(ch.nonce,'base64'),recipient:ch.recipient,callbackUrl:ch.callbackUrl};
  const bobKey=customers[bob],forged={accountId:alice,publicKey:KeyPair.fromString(bobKey).getPublicKey().toString(),signature:signNep413(bobKey,payload),nonce:ch.nonce};
@@ -152,5 +170,5 @@ try{
  await nav('Controls');await page.screenshot({path:'test-results/chain-controls.png',fullPage:true});
  await page.setViewportSize({width:390,height:844});await nav('Jobs');await page.screenshot({path:'test-results/chain-mobile.png',fullPage:true});assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
  assert.deepEqual(errors,[]);
- console.log('Chain checks passed: public pages, wallet sign-in, vault from the factory (keyless vault, restricted agent, owner on-chain), keys kept from the browser, payee labels, freeze, NEAR AI key, limit errors, agent delivery, USD quote, automatic and approved payments, rejection, receipts and transactions, forged approvals and injected results, limits, payees, withdrawal, signed webhook and Telegram alerts for held and paid payments, gas relayer (agent allowance untouched), agent API keys, REST and MCP payments within limits, read-only and revoked keys, customer isolation, taken names, vault found on-chain without a hash, full refund of a large failed deposit, forged and replayed sign-ins, data deletion, mobile layout.');
+ console.log('Chain checks passed: public pages, wallet sign-in, vault from the factory (keyless vault, restricted agent, owner on-chain), keys kept from the browser, payee labels, freeze, NEAR AI key, limit errors, agent delivery, USD quote, automatic and approved payments, rejection, receipts and transactions, forged approvals and injected results, limits, payees, withdrawal, signed webhook and Telegram alerts for held and paid payments, gas relayer (agent allowance untouched), agent API keys, REST and MCP payments within limits, a USDC vault (payee registration, deposit, payment, withdrawal), read-only and revoked keys, customer isolation, taken names, vault found on-chain without a hash, full refund of a large failed deposit, forged and replayed sign-ins, data deletion, mobile layout.');
 }finally{await browser?.close();await app.stop();await stub.close();receiver.close();tgApi.close()}
