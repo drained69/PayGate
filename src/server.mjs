@@ -9,7 +9,7 @@ import {vaultClient,factoryClient,verifySignIn,signNep413,accountFor,reason,toNe
 import {openStore} from './store.mjs';
 import {sealer} from './secrets.mjs';
 import {checkWebhook,sendWebhook,telegram} from './alerts.mjs';
-const env=process.env,port=Number(env.PORT||3000),root=new URL('./public/',import.meta.url);
+const env=process.env,port=Number(env.PORT||3000),root=new URL('../public/',import.meta.url);
 const fail=message=>{console.error(message);process.exit(1)};
 // A public URL means the server is reachable from the internet.
 const publicUrl=env.PUBLIC_URL||(env.RAILWAY_PUBLIC_DOMAIN?'https://'+env.RAILWAY_PUBLIC_DOMAIN:''),hosted=Boolean(publicUrl);
@@ -25,7 +25,7 @@ if(env.PAYGATE_DEV_ACCOUNTS&&network!=='sandbox')fail('Remove PAYGATE_DEV_ACCOUN
 const devAccounts=network==='sandbox'&&env.PAYGATE_DEV_ACCOUNTS?JSON.parse(env.PAYGATE_DEV_ACCOUNTS):null;
 // On testnet and mainnet, customers connect their own wallet through NEAR Connect in the browser.
 const walletUrl=devAccounts?'/dev-wallet':null;
-const dir=env.DATA_DIR?pathToFileURL(env.DATA_DIR+'/'):new URL('./data/',import.meta.url);
+const dir=env.DATA_DIR?pathToFileURL(env.DATA_DIR+'/'):new URL('../data/',import.meta.url);
 try{await mkdir(dir,{recursive:true,mode:0o700})}catch(e){fail(`Cannot create ${dir.pathname} (${e.code}). On Railway, attach a volume or set DATABASE_URL.`)}
 // Customer keys are sealed with PAYGATE_SECRET. A local run without one keeps a generated secret in the data folder.
 let secret=env.PAYGATE_SECRET;

@@ -1,6 +1,6 @@
 import {stat} from 'node:fs/promises';
 import {JsonRpcProvider,nearToYocto,yoctoToNear} from 'near-api-js';
-import {accountFor,deployPlatform,CODE,FACTORY_CODE,NETWORKS} from '../chain.mjs';
+import {accountFor,deployPlatform,CODE,FACTORY_CODE,NETWORKS} from '../src/chain.mjs';
 // Deploys the PayGate platform once: the factory customers use, holding the vault code it copies into each vault.
 // The operator key is used for this run only and is never written to disk.
 const e=process.env,network=e.NEAR_NETWORK,stop=m=>{console.error(m);process.exit(1)};

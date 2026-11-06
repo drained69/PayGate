@@ -1,8 +1,37 @@
-data/
-.env
+# Dependencies
 node_modules/
+
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Local data written by the server
+data/
+
+# Rust build output (contract/res/ holds the committed WASM)
+target/
+
+# Test output
 test-results/
 playwright-report/
-contract/target/
-contract/factory/target/
-contract/test-token/target/
+blob-report/
+coverage/
+.nyc_output/
+
+# Logs
+*.log
+npm-debug.log*
+
+# Editors and operating systems
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+
+# Local tool state
+.railway/
+.claude/

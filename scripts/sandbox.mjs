@@ -1,7 +1,7 @@
 import {readFile} from 'node:fs/promises';
 import {Sandbox,DEFAULT_ACCOUNT_ID,DEFAULT_PRIVATE_KEY} from 'near-sandbox';
 import {KeyPair,nearToYocto,actions} from 'near-api-js';
-import {accountFor,provision,deployPlatform} from '../chain.mjs';
+import {accountFor,provision,deployPlatform} from '../src/chain.mjs';
 // near-sdk 5.30 imports host functions added in nearcore 2.14, so the default 2.13 sandbox cannot run the contract.
 const VERSION='2.14.0';
 export const near=n=>String(nearToYocto(n));

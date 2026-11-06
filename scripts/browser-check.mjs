@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import {startStub} from './near-stub.mjs';
 // The public site without a chain: homepage, docs, legal pages, the sign-in hand-off to the wallet, and layout.
 const dir=await mkdtemp(tmpdir()+'/paygate-test-'),stub=await startStub(),port=3099,url=`http://localhost:${port}`;
-const server=spawn(process.execPath,['server.mjs'],{env:{...process.env,PORT:String(port),DATA_DIR:dir,NEAR_AI_URL:stub.url,ONECLICK_URL:stub.url,NEAR_NETWORK:'testnet',PAYGATE_FACTORY:'paygate.testnet',PAYGATE_SECRET:'',DATABASE_URL:'',PUBLIC_URL:'',RAILWAY_PUBLIC_DOMAIN:'',PAYGATE_DEV_ACCOUNTS:''},stdio:['ignore','pipe','inherit']});
+const server=spawn(process.execPath,['src/server.mjs'],{env:{...process.env,PORT:String(port),DATA_DIR:dir,NEAR_AI_URL:stub.url,ONECLICK_URL:stub.url,NEAR_NETWORK:'testnet',PAYGATE_FACTORY:'paygate.testnet',PAYGATE_SECRET:'',DATABASE_URL:'',PUBLIC_URL:'',RAILWAY_PUBLIC_DOMAIN:'',PAYGATE_DEV_ACCOUNTS:''},stdio:['ignore','pipe','inherit']});
 let browser;
 try{
  await new Promise((resolve,reject)=>{server.stdout.once('data',resolve);server.once('error',reject);server.once('exit',code=>reject(Error('Server exited: '+code)))});

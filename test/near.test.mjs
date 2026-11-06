@@ -1,10 +1,10 @@
 import {test,before,after} from 'node:test';
 import assert from 'node:assert/strict';
-import {usdValue,attestation,deliver,checkReport,integrations} from '../near.mjs';
+import {usdValue,attestation,deliver,checkReport,integrations} from '../src/near.mjs';
 import {startStub,report} from '../scripts/near-stub.mjs';
-import {toYocto,toNear,isAccountId,nep413Hash,signNep413,verifySignIn} from '../chain.mjs';
+import {toYocto,toNear,isAccountId,nep413Hash,signNep413,verifySignIn} from '../src/chain.mjs';
 import {KeyPair,baseEncode} from 'near-api-js';
-import {sealer} from '../secrets.mjs';
+import {sealer} from '../src/secrets.mjs';
 let stub;const nonce='cd'.repeat(32);
 before(async()=>{stub=await startStub();process.env.NEAR_AI_URL=stub.url;process.env.ONECLICK_URL=stub.url;});
 after(async()=>{await stub.close()});

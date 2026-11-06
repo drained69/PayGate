@@ -6,11 +6,11 @@ import {mkdtemp,rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {KeyPair} from 'near-api-js';
 import {startStub} from '../scripts/near-stub.mjs';
-import {signNep413} from '../chain.mjs';
-import {openStore} from '../store.mjs';
+import {signNep413} from '../src/chain.mjs';
+import {openStore} from '../src/store.mjs';
 const HOSTED=3093,PUBLIC='paygate.example',SECRET='s'.repeat(40);
 let stub,dir;const servers=[];
-const run=(port,env)=>{const server=spawn(process.execPath,['server.mjs'],{env:{...process.env,PORT:String(port),NEAR_AI_URL:stub.url,ONECLICK_URL:stub.url,NEAR_NETWORK:'testnet',NEAR_RPC_URL:'http://127.0.0.1:9',PAYGATE_FACTORY:'',PAYGATE_SECRET:'',PAYGATE_DEV_ACCOUNTS:'',DATABASE_URL:'',RAILWAY_PUBLIC_DOMAIN:'',PUBLIC_URL:'',...env},stdio:['ignore','pipe','pipe']});servers.push(server);return server};
+const run=(port,env)=>{const server=spawn(process.execPath,['src/server.mjs'],{env:{...process.env,PORT:String(port),NEAR_AI_URL:stub.url,ONECLICK_URL:stub.url,NEAR_NETWORK:'testnet',NEAR_RPC_URL:'http://127.0.0.1:9',PAYGATE_FACTORY:'',PAYGATE_SECRET:'',PAYGATE_DEV_ACCOUNTS:'',DATABASE_URL:'',RAILWAY_PUBLIC_DOMAIN:'',PUBLIC_URL:'',...env},stdio:['ignore','pipe','pipe']});servers.push(server);return server};
 async function start(port,env){const server=run(port,env);await new Promise((ready,fail)=>{server.stdout.once('data',ready);server.once('exit',code=>fail(Error('Server exited: '+code)))})}
 // Starts a server that must refuse to run, and returns what it printed.
 const refuses=env=>new Promise(done=>{const s=run(3095,env);let err='';s.stderr.on('data',c=>err+=c);s.once('exit',code=>done({code,err}))});

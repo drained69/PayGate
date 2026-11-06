@@ -40,7 +40,7 @@ Facts below are from the Shade Agent Framework repository, [NearDeFi/shade-agent
 | Agent account | `<name>-agent.<factory>`, with one function-call key for `request_payment` | Not needed. The factory sets the agent contract as each new vault's agent |
 | Agent key | Held by the PayGate server, encrypted with AES-256-GCM | Ephemeral keys inside TEE workers. The server holds none |
 | PayGate agent contract | None | New. It registers attested workers and forwards `request_payment` to vaults |
-| PayGate worker | Part of `server.mjs` | New service in a dstack TEE. It checks a payment request and calls the agent contract |
+| PayGate worker | Part of `src/server.mjs` | New service in a dstack TEE. It checks a payment request and calls the agent contract |
 | PayGate server | Signs payment requests | Keeps jobs, the UI, the Agent API and alerts. It asks the worker to pay |
 
 ### The agent contract
@@ -122,7 +122,7 @@ The design depends on a few open-source parts, not the whole framework:
 
 1. **Pin and keep our own copies.** Vendor the `shade-attestation` crate at a fixed commit, and keep our own minimal agent contract: `register_agent`, `require_valid_agent` and `request_payment`.
 2. **Run the worker on dstack directly.** Use Phala Cloud or a self-hosted dstack, without the Shade Agent CLI or the JavaScript library. The worker needs only a key, an attestation whose report data holds its account ID, and near-api-js.
-3. **Last resort: verify off-chain.** Publish the worker's attestation from an endpoint and check it the way `near.mjs` checks NEAR AI Cloud's TDX quote today. This is weaker, because the contract no longer enforces it, but it still proves which build holds the key.
+3. **Last resort: verify off-chain.** Publish the worker's attestation from an endpoint and check it the way `src/near.mjs` checks NEAR AI Cloud's TDX quote today. This is weaker, because the contract no longer enforces it, but it still proves which build holds the key.
 
 ## Not in scope
 

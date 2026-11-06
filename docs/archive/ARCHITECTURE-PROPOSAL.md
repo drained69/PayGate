@@ -1,4 +1,4 @@
-> **This is the original design proposal, not a description of the shipped product.** Most of what it describes was never built, and it uses the working name Sub Rosa. See the [README](../README.md) for what works today.
+> **This is the original design proposal, not a description of the shipped product.** Most of what it describes was never built, and it uses the working name Sub Rosa. See the [README](../../README.md) for what works today.
 
 # SUB ROSA
 

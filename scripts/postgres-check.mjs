@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import {execFileSync,spawn} from 'node:child_process';
-import {openStore} from '../store.mjs';
+import {openStore} from '../src/store.mjs';
 // Runs the store against a real Postgres. Uses DATABASE_URL if set, otherwise a throwaway Docker container.
 let url=process.env.DATABASE_URL,container;
 if(!url){
@@ -22,7 +22,7 @@ try{
  await store.remove('a.near');assert.equal(await store.get('a.near'),null);assert.equal(await store.session('h1'),null,'deleting an account ends its sessions');
  await store.close();
  // The server creates its tables and starts on Postgres.
- const server=spawn(process.execPath,['server.mjs'],{env:{...process.env,PORT:'3092',DATABASE_URL:url,NEAR_NETWORK:'testnet',PAYGATE_SECRET:'p'.repeat(40),PUBLIC_URL:'',PAYGATE_FACTORY:'',DATA_DIR:'/tmp/paygate-pg-check'},stdio:['ignore','pipe','inherit']});
+ const server=spawn(process.execPath,['src/server.mjs'],{env:{...process.env,PORT:'3092',DATABASE_URL:url,NEAR_NETWORK:'testnet',PAYGATE_SECRET:'p'.repeat(40),PUBLIC_URL:'',PAYGATE_FACTORY:'',DATA_DIR:'/tmp/paygate-pg-check'},stdio:['ignore','pipe','inherit']});
  const line=await new Promise((ok,fail)=>{server.stdout.once('data',d=>ok(String(d)));server.once('exit',c=>fail(Error('Server exited: '+c)))});server.kill();
  assert.match(line,/postgres storage/);
  console.log('Postgres checks passed: schema, locked concurrent updates, rollback, sessions, nonces, purge, account deletion, server start.');

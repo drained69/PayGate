@@ -1,7 +1,14 @@
 .git
 .env
+.env.*
 data
 node_modules
+**/node_modules
+target
+**/target
 test-results
 playwright-report
-contract/target
+video
+docs
+test
+scripts

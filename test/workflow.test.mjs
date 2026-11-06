@@ -1,6 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {transition,empty,verify,committed,external} from '../domain.mjs';
+import {transition,empty,verify,committed,external} from '../src/domain.mjs';
 const job={action:'create',amount:0.25,title:'Report',brief:'Prepare report',payee:'payee.near'};
 const settlement={network:'sandbox',vault:'v.near',paymentId:1,route:'auto',txHash:'tx'};
 test('a job runs from creation to a hash-linked receipt, and is paid once',()=>{

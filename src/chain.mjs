@@ -4,8 +4,8 @@ import {Account,JsonRpcProvider,FailoverRpcProvider,KeyPair,KeyPairSigner,Public
 // A payment request uses about 25 Tgas at most, including a token transfer and its callback. Attaching less gas
 // makes an agent key's allowance, which is charged for attached gas, last longer.
 const TGAS=1000000000000n,ONE_YOCTO=1n,GAS=60n*TGAS,REQUEST_GAS=40n*TGAS,UNIT=10n**20n;
-export const CODE=new URL('./contract/res/paygate_vault.wasm',import.meta.url);
-export const FACTORY_CODE=new URL('./contract/res/paygate_factory.wasm',import.meta.url);
+export const CODE=new URL('../contract/res/paygate_vault.wasm',import.meta.url);
+export const FACTORY_CODE=new URL('../contract/res/paygate_factory.wasm',import.meta.url);
 export const NETWORKS={
  mainnet:{rpcUrl:'https://free.rpc.fastnear.com',fallbackRpc:'https://rpc.mainnet.near.org',explorer:'https://nearblocks.io/txns/'},
  testnet:{rpcUrl:'https://test.rpc.fastnear.com',fallbackRpc:'https://rpc.testnet.near.org',explorer:'https://testnet.nearblocks.io/txns/'}

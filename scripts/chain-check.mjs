@@ -2,7 +2,7 @@ import {chromium} from 'playwright';
 import assert from 'node:assert/strict';
 import {mkdir} from 'node:fs/promises';
 import {JsonRpcProvider,KeyPair,decodeTransaction} from 'near-api-js';
-import {toYocto,signNep413,accountFor} from '../chain.mjs';
+import {toYocto,signNep413,accountFor} from '../src/chain.mjs';
 import {startChainApp} from './dev-chain.mjs';
 import {startStub} from './near-stub.mjs';
 import http from 'node:http';
