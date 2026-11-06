@@ -8,7 +8,7 @@
 
 Non-custodial spending vaults for AI agents on NEAR. The spending rules live in a smart contract the customer owns, so a hijacked agent cannot break them.
 
-[**Live app (testnet)**](https://paygate-production-d611.up.railway.app) · [How it works](#how-it-works) · [NEAR technology](#near-technology-used) · [Architecture](#architecture) · [Quick start](#quick-start) · [Security](#security-model) · [Contracts](#contract-reference)
+[**Live app**](https://trypaygate.xyz) · [How it works](#how-it-works) · [NEAR technology](#near-technology-used) · [Architecture](#architecture) · [Quick start](#quick-start) · [Security](#security-model) · [Contracts](#contract-reference)
 
 ![Node.js 22.22+](https://img.shields.io/badge/node-%E2%89%A522.22-1b3158) ![NEAR](https://img.shields.io/badge/chain-NEAR-1b3158) ![near-sdk 5.30](https://img.shields.io/badge/near--sdk-5.30-1b3158) ![Contract tests](https://img.shields.io/badge/contract%20tests-53%20passing-2f7d55) ![App tests](https://img.shields.io/badge/app%20tests-28%20passing-2f7d55) ![License: MIT](https://img.shields.io/badge/license-MIT-1b3158)
 
@@ -162,8 +162,8 @@ PayGate is built on NEAR end to end. Each item below is used in the shipped code
 
 | Deployment | URL | Status |
 | --- | --- | --- |
-| Testnet public beta | https://paygate-production-d611.up.railway.app | Live, with testnet factory `paygate.drained99.testnet` |
-| Mainnet | https://paygate-mainnet-production.up.railway.app | Server live; vault creation opens once the mainnet factory is deployed ([launch guide](docs/MAINNET.md)) |
+| Mainnet | https://trypaygate.xyz | Live, vault creation opens once the mainnet factory is deployed ([launch guide](docs/MAINNET.md)) |
+| Testnet | https://paygate-production-d611.up.railway.app | Live, with testnet factory `paygate.drained99.testnet` |
 
 | Part | What is real |
 | --- | --- |
@@ -532,7 +532,7 @@ docs/                  Mainnet launch guide, Shade Agent design, attack log, scr
 Built for **NEAR HACKATHON**.
 
 - **Tracks:** security (on-chain spending limits, restricted keys, wallet approvals, keyless factory, attack demo) and AI agents and privacy (NEAR AI Cloud inference with attestation evidence, Agent API and MCP).
-- **What to look at first:** run `npm run demo:attack`, then open the [live app](https://paygate-production-d611.up.railway.app). Read [How it works](#how-it-works) and [NEAR technology used](#near-technology-used).
+- **What to look at first:** run `npm run demo:attack`, then open the [live app](https://trypaygate.xyz). Read [How it works](#how-it-works) and [NEAR technology used](#near-technology-used).
 - **Reproducibility:** every claim above has a check in [Testing and verification](#testing-and-verification). Trust boundaries are in [REPRODUCIBILITY.md](REPRODUCIBILITY.md).
 - **Runtime libraries:** `near-api-js` and `pg`. Contracts use `near-sdk`. Tests use `near-sandbox` and Playwright.
 - **AI disclosure:** development used AI coding tools.
