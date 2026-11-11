@@ -11,7 +11,7 @@
 
 Non-custodial spending vaults for AI agents on NEAR. The spending rules live in a smart contract the customer owns, so a hijacked agent cannot break them.
 
-[**Live app**](https://trypaygate.xyz) · [How it works](#how-it-works) · [NEAR technology](#near-technology-used) · [Architecture](#architecture) · [Quick start](#quick-start) · [Security](#security-model) · [Contracts](#contract-reference)
+[**Live app (testnet)**](https://trypaygate.xyz) · [Judge quickstart](#judge-quickstart) · [How it works](#how-it-works) · [NEAR technology](#near-technology-used) · [Architecture](#architecture) · [Quick start](#quick-start) · [Security](#security-model) · [Contracts](#contract-reference)
 
 ![Node.js 22.22+](https://img.shields.io/badge/node-%E2%89%A522.22-1b3158) ![NEAR](https://img.shields.io/badge/chain-NEAR-1b3158) ![near-sdk 5.30](https://img.shields.io/badge/near--sdk-5.30-1b3158) ![Contract tests](https://img.shields.io/badge/contract%20tests-53%20passing-2f7d55) ![App tests](https://img.shields.io/badge/app%20tests-28%20passing-2f7d55) ![License: MIT](https://img.shields.io/badge/license-MIT-1b3158)
 
@@ -27,10 +27,11 @@ Non-custodial spending vaults for AI agents on NEAR. The spending rules live in 
 - **Solution.** A vault contract owned by the customer holds the money. The agent's only key can *ask* the vault to pay, and the vault decides by rules the agent cannot change: allowlisted payees, per-payment and daily limits, one payment per job, and owner approval for anything large.
 - **Proof.** An attack demo hijacks the agent and uses its real key to try 12 ways of stealing the funds. All 12 are blocked on-chain, and the attacker receives 0 NEAR ([log](docs/attack-demo-log.txt)).
 - **Built on NEAR.** Rust smart contracts, function-call access keys, NEP-413 sign-in, NEP-366 meta-transactions, NEP-141 and NEP-145 for USDC, NEP-297 events, NEAR Connect, NEAR AI Cloud and NEAR Intents 1Click. See [NEAR technology used](#near-technology-used).
-- **Status.** Live on NEAR mainnet at [trypaygate.xyz](https://trypaygate.xyz), with vault creation opening once the mainnet factory is deployed. A public beta runs on testnet. The contracts have had an in-house review ([docs/MAINNET.md](docs/MAINNET.md)) but no independent audit yet.
+- **Status.** Live on NEAR testnet at [trypaygate.xyz](https://trypaygate.xyz). Mainnet-ready but not launched: the launch steps are in [docs/MAINNET.md](docs/MAINNET.md). The contracts have had an in-house review but no independent audit yet.
 
 ## Contents
 
+1. [Judge quickstart](#judge-quickstart)
 1. [The problem](#the-problem)
 2. [How it works](#how-it-works)
 3. [NEAR technology used](#near-technology-used)
@@ -53,6 +54,42 @@ Non-custodial spending vaults for AI agents on NEAR. The spending rules live in 
 20. [Hackathon submission](#hackathon-submission)
 
 ---
+
+## Judge quickstart
+
+Each step says what to do and what you should see. A to C need only Node.js 22.22.2 or later; nothing uses real funds.
+
+**A. Watch a hijacked agent fail to steal (about 2 minutes)**
+
+1. Run `git clone https://github.com/drained69/PayGate.git && cd PayGate && npm install`.
+2. Run `npm run demo:attack`. You see 12 `BLOCKED` lines, each naming the rule that stopped it, and then `Result: the attacker received 0 NEAR`. Every step is a real transaction on a local NEAR node. A saved run is in [docs/attack-demo-log.txt](docs/attack-demo-log.txt).
+
+**B. Use the whole product on a local NEAR node (about 5 minutes)**
+
+1. Run `npm run dev:chain`. You see `PayGate on a local NEAR node → http://localhost:3000`, the factory account and the test accounts.
+2. Open http://localhost:3000, select **Sign in with NEAR** and choose `alice.sandbox` in the local wallet. You see the vault setup form.
+3. Enter a vault name, keep the suggested limits, enter `payee.sandbox` under **Payees** and select **Create vault in wallet**. You see "Your vault is live." and the dashboard.
+4. In **Jobs**, create a job for `payee.sandbox` with a budget of 0.05 NEAR, select **Record delivery**, then **Review & pay** and **Pay 0.05 NEAR**. You see "Paid from the vault." In **Evidence**, the receipt says "Paid automatically" and links its transaction.
+5. Create a second job with a budget of 0.3 NEAR, above the automatic limit of 0.1. Record a delivery, then select **Review & pay** and **Request payment**. The job shows "Awaiting approval". Select **Approve in wallet**, and the receipt says "Paid with owner approval".
+6. In **Controls**, select **Freeze in wallet**. The vault contract now refuses every payment until you unfreeze.
+
+**C. Run every automated check (about 10 minutes)**
+
+| Run | You see |
+| --- | --- |
+| `npm test` | `pass 28`, `fail 0` |
+| `cd contract && cargo test` (Rust 1.97.1) | `41 passed` |
+| `cd contract/factory && cargo test` | `12 passed` |
+| `npx playwright install chromium`, then `npm run test:chain` | `Chain checks passed: …`. It covers the product end to end on a local node, including USDC vaults, a cross-chain payout through a stand-in 1Click, closing a vault, retiring the factory, and the Agent API over REST and MCP |
+| `npm run check:live` (internet) | A real NEAR Intents 1Click quote and a real NEAR AI Cloud attestation check |
+
+**D. Try the hosted app on testnet**
+
+1. Open https://trypaygate.xyz. The page says "Live on NEAR testnet".
+2. Select **Sign in with NEAR** and choose a NEAR Connect wallet that supports testnet, such as Meteor or HOT, with a testnet account. Free testnet NEAR is at https://near-faucet.io.
+3. Create a vault with at least the minimum the form shows, then follow steps B4 to B6, using a second testnet account as the payee.
+
+The hosted testnet factory is an earlier release that creates NEAR vaults. USDC vaults, closing and retiring are covered by C. Cross-chain payouts run only on mainnet, because NEAR Intents has no testnet.
 
 ## The problem
 
@@ -163,8 +200,9 @@ Every item below is used in the shipped code.
 
 | Network | URL | Status |
 | --- | --- | --- |
-| Mainnet | [trypaygate.xyz](https://trypaygate.xyz) | Server live. Vault creation opens once the mainnet factory is deployed ([launch guide](docs/MAINNET.md)) |
-| Testnet | [paygate-production-d611.up.railway.app](https://paygate-production-d611.up.railway.app) | Public beta with factory `paygate.drained99.testnet` |
+| Testnet | [trypaygate.xyz](https://trypaygate.xyz) | Live, with factory `paygate.drained99.testnet`. Online through at least 2026-11-25 |
+| Testnet (second instance) | [paygate-production-d611.up.railway.app](https://paygate-production-d611.up.railway.app) | Same factory, separate data |
+| Mainnet | — | Not launched. The contracts and server are mainnet-ready; see [docs/MAINNET.md](docs/MAINNET.md) |
 
 | Component | What is real |
 | --- | --- |
@@ -172,7 +210,8 @@ Every item below is used in the shipped code.
 | Payments | **Real NEAR or USDC**, sent to the payee's account |
 | Sign-in and owner actions | **Signed in the customer's wallet.** PayGate never holds owner keys |
 | Balance, daily spend, limits, held payments | **Read live** from the customer's vault |
-| Dollar values and cross-chain payouts | **Live** NEAR Intents 1Click. Payouts run on mainnet only |
+| Dollar values | **Live** NEAR Intents 1Click dry quotes |
+| Cross-chain payouts | **Built and tested locally** against a stand-in 1Click. They need mainnet, because NEAR Intents has no testnet |
 | NEAR AI Cloud inference and attestation | **Live** with the customer's own key. Intel's signature on the quote is not verified here; use the [NEAR AI Verification Center](https://docs.near.ai/cloud/verification/verification-center) |
 | Independent security audit | **Not yet.** Customers are advised to start with small limits |
 
@@ -304,7 +343,7 @@ Tools: `get_vault`, `list_payees`, `list_jobs`, `get_job`, `create_job`, `delive
 ```sh
 curl https://trypaygate.xyz/api/v1/jobs \
   -H "Authorization: Bearer $PAYGATE_KEY" -H "Content-Type: application/json" \
-  -d '{"title":"Competitor pricing","brief":"Summarize three pricing pages","payee":"contractor.near","amount":0.05}'
+  -d '{"title":"Competitor pricing","brief":"Summarize three pricing pages","payee":"contractor.testnet","amount":0.05}'
 
 curl -X POST https://trypaygate.xyz/api/v1/jobs/PG-1a2b3c4d/deliver \
   -H "Authorization: Bearer $PAYGATE_KEY" -H "Content-Type: application/json" \
@@ -582,13 +621,19 @@ Install Chromium with `npx playwright install chromium`. On macOS you can use an
 
 ## Hackathon submission
 
-Built for **NEAR HACKATHON**.
+Built for **NEAR HACKATHON** (development window 2026-11-01 to 2026-11-14).
 
-- **Tracks.** Security (on-chain spending limits, restricted keys, wallet approvals, keyless factory, attack demo), and AI agents and privacy (NEAR AI Cloud inference with attestation evidence, Agent API and MCP).
-- **Where to start.** Run `npm run demo:attack`, then open the [live app](https://trypaygate.xyz). Read [How it works](#how-it-works) and [NEAR technology used](#near-technology-used).
-- **Reproducibility.** Every claim above has a check in [Testing](#testing). Trust boundaries are in [REPRODUCIBILITY.md](REPRODUCIBILITY.md).
-- **Runtime libraries.** `near-api-js` and `pg`. Contracts use `near-sdk`. Tests use `near-sandbox` and Playwright.
-- **AI disclosure.** Development used AI coding tools.
+| Item | Detail |
+| --- | --- |
+| Development window | The repository's first commit is dated 2026-11-01. Every commit is inside the window, so there is no pre-hackathon baseline |
+| Prior work | None. PayGate is a new project, not an existing product on NEAR or another chain |
+| Tracks it fits | **AI Security & Defense** (`security`): function-call keys, on-chain spending limits, NEAR AI attestation checks. **Agent Economy** (`agents`): agents get paid and pay through vaults, the Agent API and MCP. **Real-World Money** (`realworld`): USDC budgets, NEP-366 meta-transactions, NEAR Intents payouts. **Privacy & Private AI** (`privacy`): NEAR AI Cloud inference with attestation evidence. **Autonomous Business** (`business`): humans set limits; agents spend within them, including cross-chain through NEAR Intents |
+| Network | Testnet. Cross-chain payouts need mainnet, because NEAR Intents has no testnet; they are verified locally with a stand-in 1Click, and `npm run check:live` makes a real dry quote |
+| Hosted demo | https://trypaygate.xyz, online through at least 2026-11-25 |
+| How to verify | [Judge quickstart](#judge-quickstart) |
+| Libraries and tools | Server: `near-api-js`, `pg`. Browser: `@hot-labs/near-connect` (bundled). Contracts: `near-sdk`, with `near-contract-standards` only in the local test token. Tests: `near-sandbox`, Playwright. Demo video: Remotion. No template or boilerplate was used |
+| AI disclosure | Most of the code, tests and documentation were written with AI coding assistants (Claude Code), directed and reviewed by the team. The demo video's narration was generated with Higgsfield |
+| License | [MIT](LICENSE). The repository stays public through judging |
 
 ## License
 
