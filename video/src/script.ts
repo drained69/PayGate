@@ -18,5 +18,5 @@ export const LINES: { id: LineId; text: string; say?: string }[] = [
   { id: 'approve', text: 'Bigger ones are held on-chain until you approve them in your own wallet. PayGate never holds your owner key.' },
   { id: 'attack', text: 'Now the worst case. A hidden instruction hijacks the agent, and it uses its real key to try twelve ways to drain the vault. Every one is blocked on-chain. The attacker gets nothing.' },
   { id: 'evidence', text: 'Every payment leaves a NEAR transaction and a hash-linked receipt. Freeze in one signature, and withdraw any time, even if PayGate goes offline.' },
-  { id: 'end', text: 'PayGate. Agent budgets, enforced. Live on NEAR mainnet at trypaygate.xyz.', say: 'PayGate. Agent budgets, enforced. Live on NEAR mainnet, at try paygate dot x y z.' },
+  { id: 'end', text: 'PayGate. Agent budgets, enforced. trypaygate.xyz', say: 'PayGate. Agent budgets, enforced. Try paygate dot x y z.' },
 ];

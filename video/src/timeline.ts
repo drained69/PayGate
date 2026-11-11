@@ -12,7 +12,7 @@ export const BAR = BEAT * 4;
 
 export type SceneId = LineId;
 const LEAD = 4, TAIL = 5; // frames of air before and after each line
-const HOLD: Partial<Record<SceneId, number>> = { end: 24 }; // extra frames to let a moment land
+const HOLD: Partial<Record<SceneId, number>> = { end: 60 }; // extra frames to let a moment land
 
 export const SCENES: { id: SceneId; frames: number }[] = LINES.map(l => {
   const voice = Math.ceil(VO[l.id].dur * FPS);
@@ -41,7 +41,7 @@ export const T = {
   approve: { held: 0, tapReview: 3, dialog: 3.5, tapApprove: 6, wallet: 6.5, tapSign: 9, walletOut: 9.5, toast: 10 },
   attack: { brief: 0, highlight: 2, hijack: 5, firstRow: 6, rows: 12, result: 18.5, zero: 20.5 },
   evidence: { page: 0, tapVerify: 4, verified: 4.75, controls: 10.5, tapFreeze: 13, wallet: 13.5, tapSign: 15.5, walletOut: 16, toast: 16.25 },
-  end: { logo: 0, line: 2.5, cta: 5 },
+  end: { logo: 0, line: 2.5, cta: 5, features: 8 },
 } as const;
 
 // Absolute frame of a (designed) beat inside a scene.
@@ -108,7 +108,7 @@ export const TYPING: Typing[] = [
   { scene: 'vault', range: T.vault.typeAuto, text: '25' },
   { scene: 'vault', range: T.vault.typeMax, text: '100' },
   { scene: 'vault', range: T.vault.typeDaily, text: '250' },
-  { scene: 'vault', range: T.vault.typePayees, text: 'research.near, design.near' },
+  { scene: 'vault', range: T.vault.typePayees, text: 'research.testnet, design.testnet' },
   { scene: 'job', range: T.job.typeTitle, text: 'Competitor pricing report' },
   { scene: 'job', range: T.job.typeBrief, text: 'Compare pricing for five rivals. One page, sources linked.' },
   { scene: 'job', range: T.job.typeBudget, text: '20' },

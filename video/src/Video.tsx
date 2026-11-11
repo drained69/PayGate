@@ -110,7 +110,7 @@ const Cover: React.FC = () => {
       <Stage strong>
         <div style={{ position: 'absolute', left: 120, top: 150, width: 980 }}>
           <Wordmark size={46} />
-          <div style={{ marginTop: 64 }}><Eyebrow size={19}>Live on NEAR mainnet</Eyebrow></div>
+          <div style={{ marginTop: 64 }}><Eyebrow size={19}>Live on NEAR testnet</Eyebrow></div>
           <div style={{ fontFamily: 'Space Grotesk', fontWeight: 300, color: INK, fontSize: 104, letterSpacing: -4, lineHeight: 1.0, marginTop: 24 }}>Give your AI agent a budget it can't overspend.</div>
           <div style={{ marginTop: 48 }}><UrlPill size={28} /></div>
         </div>
@@ -122,15 +122,20 @@ const Cover: React.FC = () => {
 
 const End: React.FC = () => {
   const frame = useCurrentFrame();
-  const a = prog(frame, 'end', T.end.logo, 0.6), b = prog(frame, 'end', T.end.line, 0.6), c = prog(frame, 'end', T.end.cta, 0.6);
+  const a = prog(frame, 'end', T.end.logo, 0.6), b = prog(frame, 'end', T.end.line, 0.6), c = prog(frame, 'end', T.end.cta, 0.6), d = prog(frame, 'end', T.end.features, 0.6);
   const up = (p: number) => ({ opacity: p, transform: `translateY(${(1 - p) * 30}px)` });
   return (
     <AbsoluteFill style={{ alignItems: 'center', justifyContent: 'center', textAlign: 'center' }}>
       <div style={up(a)}><Wordmark size={64} /></div>
       <div style={{ ...up(b), fontFamily: 'Space Grotesk', fontWeight: 300, color: INK, fontSize: 124, letterSpacing: -4.5, lineHeight: 1, marginTop: 56 }}>Agent budgets,<br />enforced.</div>
       <div style={{ ...up(c), marginTop: 64, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 22 }}>
-        <Eyebrow size={21} color={INK}>Live on NEAR mainnet</Eyebrow>
+        <Eyebrow size={21} color={INK}>Live on NEAR testnet · open source</Eyebrow>
         <UrlPill size={40} dark />
+      </div>
+      <div style={{ ...up(d), marginTop: 46, display: 'flex', flexWrap: 'wrap', justifyContent: 'center', gap: 14, maxWidth: 1500 }}>
+        {['Agent API over REST and MCP', 'Work on NEAR AI Cloud', 'Slack, Discord and Telegram alerts', 'Gas relayer (NEP-366)', 'Close the vault, get your NEAR back'].map(f => (
+          <span key={f} style={{ fontFamily: 'Space Mono', fontSize: 20, color: INK, background: 'rgba(255,255,255,.8)', border: '1px solid #c9cfdb', borderRadius: 99, padding: '10px 20px' }}>{f}</span>
+        ))}
       </div>
     </AbsoluteFill>
   );

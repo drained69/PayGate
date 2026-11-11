@@ -1,6 +1,6 @@
 # PayGate demo video
 
-A narrated 2:19 product demo at 1920x1080, for YouTube and X, built with [Remotion](https://www.remotion.dev). Every frame is React. The score and interface sounds are synthesized in code, and the narration was generated with Higgsfield (Seed Audio).
+A narrated 2:18 product demo at 1920x1080, for YouTube and X, built with [Remotion](https://www.remotion.dev). Every frame is React. The score and interface sounds are synthesized in code, and the narration was generated with Higgsfield (Seed Audio).
 
 It covers the problem, why today's defences fail, who PayGate is for, how it works, a walkthrough of the app, the hijack attack and the evidence and controls.
 
@@ -28,7 +28,9 @@ To change a line: edit `src/script.ts`, regenerate that clip with the same voice
 
 ## What is real and what is example data
 
-Real, from `docs/attack-demo-log.txt`: the 12 blocked attempts and their reasons, "12 blocked" and "Attacker received 0 NEAR". The only change is the attacker's name, from `attacker.sandbox` to `attacker.near`.
+Real, from `docs/attack-demo-log.txt`: the 12 blocked attempts and their reasons, "12 blocked" and "Attacker received 0 NEAR". The only change is the attacker's name, from `attacker.sandbox` to `attacker.testnet`. The attack screen also states the limit of the protection, as the log does: a stolen agent key can still spend up to the daily limit, only to listed payees.
+
+The video says PayGate runs on NEAR testnet, which is where the hosted app is. The closing line was cut from the original take, which mentioned mainnet.
 
 Real copy: all app headings, labels, buttons and toast messages come from `public/app.js` and `public/index.html`. The problem and defences wording follows README.md.
 
@@ -36,13 +38,13 @@ Example data (fictional):
 
 | What | Value |
 | --- | --- |
-| Owner account | `maya.near` |
-| Factory / vault | `vaults.near` / `acme.vaults.near` |
-| Payees | `research.near`, `design.near` |
-| Opening "agent wallet" | 500 USDC; `research.near`, `data.near`, `contractor.near`, `agent-7.near`, `attacker.near` |
+| Owner account | `maya.testnet` |
+| Factory / vault | `vaults.testnet` / `acme.vaults.testnet` |
+| Payees | `research.testnet`, `design.testnet` |
+| Opening "agent wallet" | 500 USDC; `research.testnet`, `data.testnet`, `contractor.testnet`, `agent-7.testnet`, `attacker.testnet` |
 | Currency and balance | USDC, 500 USDC (400 after payments) |
 | Limits | 25 USDC automatic, 100 per payment, 250 per day |
-| Initial funding | 2 NEAR |
+| Initial funding | 3 NEAR |
 | Jobs | "Competitor pricing report" 20 USDC (`job-7f3a`), "Logo refresh" 80 USDC (`job-9c21`), "API credits top-up" 12 USDC, "Vendor list summary" 15 USDC (`job-d41e`) |
 | Job briefs and the delivery text | Written for the video |
 | Dollar values | ≈ $20.00, ≈ $80.00, ≈ $12.00 |

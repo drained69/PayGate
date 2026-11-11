@@ -4,7 +4,7 @@
   "type": "module",
   "scripts": {
     "studio": "remotion studio src/index.ts",
-    "render": "remotion render src/index.ts Wide out/paygate-1920x1080.mp4 --crf 14 --audio-bitrate 320k"
+    "render": "remotion render src/index.ts Wide out/paygate-demo-1920x1080.mp4 --crf 14 --audio-bitrate 320k"
   },
   "dependencies": {
     "@remotion/cli": "^4.0.541",

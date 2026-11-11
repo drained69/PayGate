@@ -67,7 +67,7 @@ export const VO: Record<string, { dur: number; gaps: [number, number][] }> = {
   ]
  },
  "end": {
-  "dur": 6.93,
+  "dur": 4.983,
   "gaps": [
    [
     0.058,
@@ -79,11 +79,7 @@ export const VO: Record<string, { dur: number; gaps: [number, number][] }> = {
    ],
    [
     3.017,
-    3.432
-   ],
-   [
-    4.81,
-    5.158
+    3.428
    ]
   ]
  },
