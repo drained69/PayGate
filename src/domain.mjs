@@ -11,6 +11,18 @@ export function external(p){
 }
 export const isPayee=p=>isAccountId(p)||Boolean(external(p));
 export const hash=v=>createHash('sha256').update(JSON.stringify(v)).digest('hex');
+// JSONB may reorder object keys. Keep array order and sort object keys before hashing version 2 receipts.
+function canonicalJson(value){
+ const encode=v=>{
+  if(v===null||typeof v!=='object')return JSON.stringify(v);
+  if(Array.isArray(v))return '['+v.map(encode).join(',')+']';
+  return '{'+Object.keys(v).sort().map(key=>JSON.stringify(key)+':'+encode(v[key])).join(',')+'}';
+ };
+ return encode(JSON.parse(JSON.stringify(value)));
+}
+const receiptHash=body=>body.hashVersion===2
+ ?createHash('sha256').update(canonicalJson(body)).digest('hex')
+ :hash(body);
 export const empty=()=>({workspace:randomBytes(6).toString('hex'),jobs:[],receipts:[],payees:{}});
 // Actions a signed-in owner may send. Every other action is created by the server from on-chain or NEAR AI results.
 export const CLIENT_ACTIONS=['create','deliver','cancel','label'];
@@ -45,14 +57,25 @@ export function transition(current,c){
   else if(c.action==='cancel'){if(!['Working','Review'].includes(j.status))throw Error('Only jobs that are in progress or in review can be cancelled.');j.status='Cancelled'}
   else if(c.action==='requested'){if(j.status!=='Review')throw Error('Job must be awaiting review.');j.status='Awaiting approval';j.payment=c.payment}
   else if(c.action==='bridge-quote'){if(j.status!=='Awaiting approval'||!j.payment?.external)throw Error('Job is not awaiting a cross-chain approval.');j.payment.bridge=c.bridge;j.payment.quotes=[c.bridge,...(j.payment.quotes||[])].slice(0,5)}
-  else if(c.action==='released'){if(j.status!=='Awaiting approval')throw Error('Job is not awaiting approval.');j.status='Review';delete j.payment}
+  else if(c.action==='released'){
+   if(j.status!=='Awaiting approval')throw Error('Job is not awaiting approval.');
+   j.status='Review';
+   if(c.attempt)j.lastPaymentAttempt=c.attempt;
+   delete j.payment;
+  }
   else if(c.action==='paid'){
    if(!['Review','Awaiting approval'].includes(j.status))throw Error('Job must be awaiting review.');
    j.status='Paid';j.paidAt=new Date().toISOString();
    const r={id:randomUUID(),job:j.title,jobId:j.id,payee:j.payee,amount:j.amount,currency:c.settlement?.currency||'NEAR',date:j.paidAt,inference:j.inference||null,deliverySource:j.source||null,usdEstimate:j.quote||null,settlement:c.settlement,previousHash:s.receipts[0]?.hash||null};
-   s.receipts.unshift({...r,hash:hash(r)});
+   r.hashVersion=2;
+   s.receipts.unshift({...r,hash:receiptHash(r)});
   }else throw Error('Unknown action.');
  }
  s.updatedAt=new Date().toISOString();return s;
 }
-export const verify=receipts=>receipts.every((r,i)=>{const {hash:digest,...body}=r;return hash(body)===digest&&r.previousHash===(receipts[i+1]?.hash||null)});
+export const verify=receipts=>Array.isArray(receipts)&&receipts.every((r,i)=>{
+ if(!r||typeof r!=='object')return false;
+ const {hash:digest,...body}=r;
+ return (body.hashVersion===undefined||body.hashVersion===2)&&
+  receiptHash(body)===digest&&r.previousHash===(receipts[i+1]?.hash||null);
+});

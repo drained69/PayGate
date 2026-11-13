@@ -1,6 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {transition,empty,verify,committed,external} from '../src/domain.mjs';
+import {transition,empty,verify,hash,committed,external} from '../src/domain.mjs';
 const job={action:'create',amount:0.25,title:'Report',brief:'Prepare report',payee:'payee.near'};
 const settlement={network:'sandbox',vault:'v.near',paymentId:1,route:'auto',txHash:'tx'};
 test('a job runs from creation to a hash-linked receipt, and is paid once',()=>{
@@ -16,6 +16,22 @@ test('large payments wait for approval and a rejection returns the job to review
  let s=transition(empty(),job);const id=s.jobs[0].id;s=transition(s,{action:'deliver',id,text:'done'});
  s=transition(s,{action:'requested',id,payment:{paymentId:7}});assert.equal(s.jobs[0].status,'Awaiting approval');assert.throws(()=>transition(s,{action:'cancel',id}));
  s=transition(s,{action:'released',id});assert.equal(s.jobs[0].status,'Review');assert.equal(s.jobs[0].payment,undefined);
+});
+test('receipt verification survives JSON storage key reordering and preserves legacy links',()=>{
+ const old={id:'legacy',amount:0.05,previousHash:null};
+ let s={...empty(),receipts:[{...old,hash:hash(old)}]};
+ s=transition(s,job);
+ const id=s.jobs[0].id;
+ s=transition(transition(s,{action:'deliver',id,text:'Done'}),{action:'paid',id,settlement});
+ assert.ok(verify(s.receipts));
+ const reorder=v=>Array.isArray(v)?v.map(reorder):v&&typeof v==='object'
+  ?Object.fromEntries(Object.entries(v).reverse().map(([k,item])=>[k,reorder(item)])):v;
+ const roundTrip=JSON.parse(JSON.stringify(reorder(s.receipts[0])));
+ assert.notEqual(JSON.stringify(roundTrip),JSON.stringify(s.receipts[0]));
+ assert.ok(verify([roundTrip,s.receipts[1]]));
+ assert.equal(verify([roundTrip]),false);
+ roundTrip.settlement.paymentId++;
+ assert.equal(verify([roundTrip,s.receipts[1]]),false);
 });
 test('validates amounts, payees and the vault limits passed in by the server',()=>{
  for(const amount of [-1,0,NaN,Infinity,0.00001,10001])assert.throws(()=>transition(empty(),{...job,amount}),/0.0001 to 10,000/);

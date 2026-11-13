@@ -26,10 +26,51 @@ export const USDC={mainnet:'17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad
 export const TOKEN_STORAGE='1250000000000000000000';
 export const isAccountId=s=>typeof s==='string'&&s.length>=2&&s.length<=64&&/^(([a-z\d]+[-_])*[a-z\d]+\.)*([a-z\d]+[-_])*[a-z\d]+$/.test(s);
 const isHash=h=>typeof h==='string'&&/^[1-9A-HJ-NP-Za-km-z]{43,44}$/.test(h);
-export const events=(outcome,standard)=>(outcome?.receipts_outcome||[]).flatMap(r=>r.outcome.logs).filter(l=>l.startsWith('EVENT_JSON:')).map(l=>{try{return JSON.parse(l.slice(11))}catch{return null}}).filter(e=>e?.standard===standard);
+const receiptEvents=(receipt,standard)=>receipt.outcome.logs.filter(l=>l.startsWith('EVENT_JSON:')).map(l=>{try{return JSON.parse(l.slice(11))}catch{return null}}).filter(e=>e?.standard===standard);
+export const events=(outcome,standard)=>(outcome?.receipts_outcome||[]).flatMap(r=>receiptEvents(r,standard));
 // NEP-297 `data` may be one object or a list, depending on the emitter.
 const items=e=>[].concat(e?.data??[]);
-const found=(outcome,event,id)=>events(outcome,'paygate_vault').some(e=>e.event===event&&items(e).some(d=>d.id===id));
+const succeeded=receipt=>receipt.outcome.status.SuccessValue!==undefined||receipt.outcome.status.SuccessReceiptId!==undefined;
+const vaultReceipt=(receipt,vault)=>receipt.outcome.executor_id===vault&&succeeded(receipt);
+const paymentEvents=(receipt,event)=>receiptEvents(receipt,'paygate_vault').filter(e=>e.event===event).flatMap(items);
+const sameId=(a,b)=>a!=null&&b!=null&&String(a)===String(b);
+
+// payment_sent is emitted when the vault schedules a transfer. Inspect its receipts before recording it.
+function payoutResult(outcome,{vault,token,recipient,amount,jobId,id}){
+ const receipts=outcome.receipts_outcome||[];
+ const root=receipts.find(r=>vaultReceipt(r,vault)&&paymentEvents(r,'payment_sent').some(matches));
+ function matches(event){
+  return event.id!=null&&(id==null||sameId(event.id,id))&&event.job_id===jobId&&event.recipient===recipient&&event.amount===amount;
+ }
+ if(!root)throw Error('The vault did not report a transfer matching this payment.');
+ const paymentId=paymentEvents(root,'payment_sent').find(matches).id;
+ const byId=new Map(receipts.map(r=>[r.id,r]));
+ const children=[...root.outcome.receipt_ids],visited=new Set();
+ let transferred=false,failed=false;
+ for(const child of children){
+  if(visited.has(child))continue;
+  visited.add(child);
+  const receipt=byId.get(child);
+  if(!receipt)continue; // Refund receipts can still be missing from an executed result.
+  if(vaultReceipt(receipt,vault)&&paymentEvents(receipt,'payment_failed').some(e=>sameId(e.id,paymentId)))return {id:paymentId,status:'failed'};
+  if(receipt.outcome.status.Failure)failed=true;
+  if(receipt.outcome.executor_id===(token||recipient)&&succeeded(receipt))transferred=true;
+  children.push(...receipt.outcome.receipt_ids);
+ }
+ if(failed||!transferred)throw Error('The transfer outcome could not be verified. Check this transaction on the explorer before retrying.');
+ return {id:paymentId,status:'sent'};
+}
+function checkAgentRequest(outcome,hash,{agent,vault,recipient,amount,jobId}){
+ const tx=outcome.transaction,action=tx?.actions?.length===1?tx.actions[0]:null;
+ const delegate=action?.Delegate?.delegate_action;
+ const direct=tx?.signer_id===agent&&tx?.receiver_id===vault;
+ const delegated=tx?.receiver_id===agent&&delegate?.sender_id===agent&&delegate.receiver_id===vault&&delegate.actions?.length===1;
+ const call=direct?action?.FunctionCall:delegated?delegate.actions[0]?.FunctionCall:null;
+ if(tx?.hash!==hash||call?.method_name!=='request_payment')throw Error('That transaction is not a payment request from this vault’s agent.');
+ const args=JSON.parse(Buffer.from(call.args,'base64').toString());
+ if(args?.job_id!==jobId||args.recipient!==recipient||args.amount!==amount)throw Error('That transaction belongs to a different job or payment.');
+ if(outcome.status?.SuccessValue===undefined)throw Error('The payment request did not succeed on-chain.');
+}
 // A call for the signer's wallet to sign. Wallets connected through NEAR Connect take the transaction as is;
 // the local-node stand-in wallet takes a /sign link with an unsigned transaction, whose key and nonce it replaces.
 export async function walletLink({provider,walletUrl,signer,receiver,method,args,deposit=ONE_YOCTO,gas=GAS,callbackUrl,calls}){
@@ -41,14 +82,40 @@ export async function walletLink({provider,walletUrl,signer,receiver,method,args
  return {transaction,url:`${walletUrl}/sign?${new URLSearchParams({transactions:Buffer.from(encodeTransaction(tx)).toString('base64'),callbackUrl})}`};
 }
 // Checks on-chain that `signer` really sent this call and that it succeeded. A wallet callback alone proves nothing.
-export async function checkTx(provider,hash,{signer,receiver,methods,check=()=>true,network}){
+export async function checkTx(provider,hash,{signer,receiver,methods,check=()=>true,network,waitUntil='EXECUTED_OPTIMISTIC'}){
  if(!isHash(hash))throw Error('Invalid transaction hash.');
  // A node can lag a few seconds behind the wallet's node, so a missing transaction is retried before giving up.
- let r;for(let i=0;!r;i++){try{r=await provider.viewTransactionStatus({txHash:hash,accountId:signer,waitUntil:'EXECUTED_OPTIMISTIC'})}catch{if(i>=3)throw Error('Transaction not found on '+network+'. If you just signed it, try again in a minute.');await new Promise(d=>setTimeout(d,1500*(i+1)))}}
+ let r;for(let i=0;!r;i++){try{r=await provider.viewTransactionStatus({txHash:hash,accountId:signer,waitUntil})}catch{if(i>=3)throw Error('Transaction not found on '+network+'. If you just signed it, try again in a minute.');await new Promise(d=>setTimeout(d,1500*(i+1)))}}
  const t=r.transaction,call=t?.actions?.[0]?.FunctionCall,args=call?JSON.parse(Buffer.from(call.args,'base64').toString()):null;
- if(t.signer_id!==signer||t.receiver_id!==receiver||![].concat(methods).includes(call?.method_name)||!check(args,call))throw Error('That transaction is not the expected action.');
+ if(t?.hash!==hash||t.signer_id!==signer||t.receiver_id!==receiver||![].concat(methods).includes(call?.method_name)||!check(args,call))throw Error('That transaction is not the expected action.');
  if(r.status?.SuccessValue===undefined)throw Error('The transaction failed: '+reason(JSON.stringify(r.status)));
  return {outcome:r,args,method:call.method_name};
+}
+
+// A receipt can be checked after its vault is closed. Only RPC access and the saved payment terms are needed.
+export async function verifyPaymentReceipt(provider,{receipt,jobId,owner,network,agent,relayer}){
+ const s=receipt.settlement,hash=s?.txHash;
+ if(!isHash(hash)||!isAccountId(s.vault)||s.network!==network||
+    !['auto','owner-approved','cross-chain'].includes(s.route)||s.paymentId==null)throw Error('This receipt has incomplete payment details.');
+ const amount=toUnits(receipt.amount,receipt.currency==='USDC'?6:24);
+ if(s.amountUnits!=null&&s.amountUnits!==amount)throw Error('The stored amount does not match the receipt.');
+ const recipient=s.route==='cross-chain'?s.bridge?.depositAddress:receipt.payee;
+ if(!isAccountId(recipient))throw Error('This receipt has no valid NEAR destination.');
+ const terms={vault:s.vault,token:s.token,recipient,amount,jobId,id:s.paymentId};
+ let outcome;
+ if(s.route==='auto'){
+  const senders=[...new Set([s.txSigner,agent,relayer].filter(isAccountId))];
+  try{outcome=await Promise.any(senders.map(accountId=>provider.viewTransactionStatus({txHash:hash,accountId,waitUntil:'EXECUTED'})))}
+  catch{throw Error('The NEAR node could not load this payment. Try again or check the explorer.')}
+  checkAgentRequest(outcome,hash,{...terms,agent:s.agent||agent});
+ }else{
+  const external=s.route==='cross-chain';
+  ({outcome}=await checkTx(provider,hash,{signer:owner,receiver:s.vault,network,waitUntil:'EXECUTED',
+   methods:external?'pay_external':'approve_payment',check:a=>external?a?.job_id===jobId&&a.recipient===recipient&&a.amount===amount:sameId(a?.id,s.paymentId)}));
+ }
+ const result=payoutResult(outcome,terms);
+ if(result.status!=='sent')throw Error('The vault reported a failed transfer for this receipt.');
+ return {hash,vault:s.vault,recipient,route:s.route,paymentId:result.id,network,checkedAt:new Date().toISOString()};
 }
 // NEP-413 sign-in. The wallet signs a structured message; the server checks the signature and that the key is a full-access key of the account.
 const NEP413_TAG=2147484061;
@@ -165,18 +232,33 @@ export function vaultClient(config){
    }catch(e){
     // An earlier attempt may have stopped after the request landed. Resume it only if it asks for exactly what this job owes, because the agent key could have placed it.
     const held=/already been paid or requested/.test(reason(e))?(await view('get_pending')).find(p=>p.job_id===key):null;
-    if(!held&&/already been paid or requested/.test(reason(e)))throw Error('The vault already paid this job. Check the vault account on the explorer before trying again.');
+    if(!held&&/already been paid or requested/.test(reason(e)))throw Error('This job already has a payment on-chain. Find its transaction in the vault history and use Record an existing payment.');
     if(!held)throw e;
     if(held.recipient!==job.payee||held.amount!==amount)throw Error('A pending payment for this job has different terms. Review it on-chain.');
     return {paymentId:held.id,status:'pending',amountYocto:amount,txHash:null};
    }
-   if(status==='sent'&&found(result,'payment_failed',id))throw Error(`The transfer to ${job.payee} failed and was refunded to the vault.`);
-   return {paymentId:id,status,amountYocto:amount,txHash:txHash(result)};
+   if(status==='sent'&&payoutResult(result,{vault,token:config.token,recipient:job.payee,amount,jobId:key,id}).status==='failed')throw Error(`The transfer to ${job.payee} failed and was refunded to the vault.`);
+   if(status!=='sent'&&status!=='pending')throw Error('The vault returned an unknown payment status.');
+   return {paymentId:id,status,amountYocto:amount,txHash:txHash(result),txSigner:result.transaction?.signer_id};
   },
   ownerLink(method,args,callbackUrl,gas){return walletLink({provider,walletUrl:this.walletUrl,signer:owner,receiver:vault,method,args,callbackUrl,...(gas?{gas}:{})})},
   confirmOwner(hash,methods,check){return checkTx(provider,hash,{signer:owner,receiver:vault,methods,check,network})},
-  // The vault's payment id for a job, from its payment_sent event.
-  sentId:(outcome,jobId)=>events(outcome,'paygate_vault').filter(e=>e.event==='payment_sent').flatMap(items).find(d=>d.job_id===jobId)?.id??null,
-  found
+  async confirmAutomatic(hash,job,key){
+   if(!isHash(hash))throw Error('Invalid transaction hash.');
+   const senders=[...new Set([agent,config.relayer?.accountId].filter(Boolean))];
+   let outcome;
+   try{
+    outcome=await Promise.any(senders.map(accountId=>provider.viewTransactionStatus({txHash:hash,accountId,waitUntil:'EXECUTED'})));
+   }catch{
+    throw Error('Could not find a finalized payment transaction on '+network+'. Check the hash and try again.');
+   }
+   const amount=toUnits(job.amount,dec),terms={vault,token:config.token,recipient:job.payee,amount,jobId:key};
+   checkAgentRequest(outcome,hash,{...terms,agent});
+   const result=payoutResult(outcome,terms);
+   if(result.status==='failed')throw Error('The vault reported that this transfer failed. The job is still in review.');
+   return {paymentId:result.id,amountUnits:amount,txSigner:outcome.transaction.signer_id};
+  },
+  payoutResult:(outcome,terms)=>payoutResult(outcome,{...terms,vault,token:config.token}),
+  rejected:(outcome,id)=>(outcome.receipts_outcome||[]).some(r=>vaultReceipt(r,vault)&&paymentEvents(r,'payment_rejected').some(e=>sameId(e.id,id)))
  };
 }

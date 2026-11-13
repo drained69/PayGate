@@ -11,6 +11,7 @@
     "check:live": "node scripts/live-check.mjs",
     "check:deployed": "node scripts/deployed-check.mjs",
     "demo:attack": "node scripts/attack-demo.mjs",
+    "check:judge": "node --test && node scripts/attack-demo.mjs --no-write",
     "dev:chain": "node scripts/dev-chain.mjs",
     "test:chain": "node scripts/chain-check.mjs",
     "platform:deploy": "node scripts/deploy-platform.mjs",

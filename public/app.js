@@ -37,7 +37,7 @@ async function viaWallet(getUrl,op){
   const done=fn=>{removeEventListener('message',onMessage);clearInterval(timer);try{sessionStorage.removeItem('paygate-op')}catch{};fn()};
   const onMessage=e=>{if(e.origin!==walletOrigin&&e.origin!==location.origin)return;const d=e.data||{};if(!d.status)return;done(()=>d.status==='success'?resolve(d):reject(new Error('The wallet did not sign. Nothing was changed.')))};
   // A wallet often closes itself right after posting its result, so a closed window gets a moment for the message to arrive.
-  let closedAt=0;const timer=setInterval(()=>{if(!w.closed)return;closedAt||=Date.now();if(Date.now()-closedAt>1500)done(()=>reject(new Error('The wallet window was closed. Nothing was changed.')))},300);
+  let closedAt=0;const timer=setInterval(()=>{if(!w.closed)return;closedAt||=Date.now();if(Date.now()-closedAt>1500)done(()=>reject(new Error('The wallet closed before PayGate received a result. Check your wallet history if you signed.')))},300);
   addEventListener('message',onMessage);
  });
 }
@@ -67,13 +67,28 @@ async function signTx(getRequest,op){
  return outcome?.transaction?.hash||outcome?.transaction_outcome?.id||'';
 }
 async function owner(kind,payload={},errors){
- try{await afterWallet({kind,id:payload.id},await signTx(()=>api('action',{action:'owner',kind,...payload}),{kind,id:payload.id}))}
+ try{
+  const op={kind,id:payload.id},hash=await signTx(()=>api('action',{action:'owner',kind,...payload}),op);
+  if(!hash)throw Error('The wallet did not return a transaction hash. If you signed, check your wallet history.');
+  await afterWallet(op,hash);
+ }
  catch(e){if(errors)errors.textContent=e.message||String(e);else toast(e.message||String(e))}
+}
+async function recordPayment(id,txHash,errors){
+ if(!await mutate('confirm',{id,txHash},errors))return;
+ $('#review-dialog')?.close();
+ const attempt=ws().jobs.find(j=>j.id===id)?.lastPaymentAttempt;
+ if(attempt?.txHash===txHash){
+  toast(attempt.result==='failed'?'Transfer failed. The job is back in review.':'Payment rejected. The job is back in review.');
+ }else{
+  const receipt=ws().receipts.find(r=>r.jobId===id&&r.settlement.txHash===txHash);
+  toast(receipt?.settlement.route==='auto'?'Existing payment recorded.':'Payment approved and sent.');
+ }
 }
 // A job payment counts only after the server finds the signed approval on-chain.
 async function afterWallet(op,tx){
  if(!tx)return;
- if(op.kind==='approve'||op.kind==='reject'){if(await mutate('confirm',{id:op.id,txHash:tx})){$('#review-dialog')?.close();toast(ws().jobs.find(j=>j.id===op.id)?.status==='Paid'?'Payment approved and sent.':'Payment rejected. The job is back in review.')}}
+ if(op.kind==='approve'||op.kind==='reject')await recordPayment(op.id,tx,$('#review-error'));
  else if(op.kind==='close'){if(await mutate('vault-closed',{txHash:tx},$('#close-error'))){page='Overview';render();toast('Vault closed. Its NEAR is back in your account.')}}
  else if(op.kind==='vault'){if(await mutate('vault-confirm',{txHash:tx})){page='Overview';render();toast('Your vault is live.')}}
  else{await refreshVault();render();toast('Wallet transaction confirmed. Vault updated.')}
@@ -101,7 +116,7 @@ const committed=()=>ws().jobs.filter(j=>OPEN.includes(j.status)).reduce((s,j)=>s
 // Payees on other chains are written chain:address and paid through NEAR Intents.
 const chainName=c=>(config.chains||[]).find(x=>x.chain===c)?.name||c.toUpperCase();
 const ext=a=>{const m=/^([a-z]+):(.+)$/.exec(a||'');return m?{chain:m[1],address:m[2],name:chainName(m[1])}:null};
-const rawPayee=a=>{const x=ext(a);return x?`${x.name} ${short(x.address)}`:a},payeeText=a=>ws().payees[a]||rawPayee(a);
+const rawPayee=a=>{const x=ext(a);return x?`${x.name} ${short(x.address)}`:a};
 // The factory sets the minimum: 0.3 NEAR for the agent, the rest for the vault's own copy of its code and its storage.
 // With a gas relayer, the agent gets only a little NEAR for its storage, because the relayer pays its gas.
 const agentNear=()=>config.agentFund??0.3,minDeposit=()=>config.minDeposit||0.4,codeStorage=()=>Math.max(0,minDeposit()-agentNear());
@@ -143,15 +158,15 @@ function setup(){
  const top=head('Welcome','Create your vault.',`Signed in as <b>${esc(state.account)}</b>. One transaction in your wallet creates a vault you own and an agent that can only ask it for payments.`);
  if(!config.ready)return top+'<div class="notice"><b>Vault creation is not open yet.</b> This PayGate server has no factory configured. Check back soon.</div>';
  if(state.pending)return top+`<div class="panel"><h3>Finishing vault <code>${esc(state.pending.name)}</code></h3><p>If you signed in your wallet, PayGate finds your vault on-chain. Otherwise start again; nothing was spent.</p><div class="dialog-actions"><button class="primary" data-action="vault-check">Check again</button><button class="secondary" data-action="vault-cancel">Start again</button></div><form id="vault-hash-form" class="inline-form" style="margin-top:20px"><label>Or paste the transaction hash<input name="hash" required placeholder="Transaction hash"></label><button class="secondary" type="submit">Confirm</button></form><div id="vault-error" class="dialog-error"></div></div>`;
- return top+`<section class="split"><form id="vault-form" class="panel"><label>Vault name<input name="name" required minlength="2" maxlength="32" pattern="[a-z0-9](?:[a-z0-9]|-(?!-))*[a-z0-9]" placeholder="acme" autocomplete="off"><span class="hint">Your vault will be <b id="vault-preview">name.${esc(config.factory)}</b>. Lowercase letters, digits and single dashes.</span></label>${config.usdc?`<label>Currency<select name="currency"><option value="NEAR">NEAR</option><option value="USDC">USDC</option></select><span class="hint" id="currency-hint">The vault holds and pays in NEAR.</span></label>`:''}<label>Initial funding (NEAR)<input name="fund" type="number" min="${minDeposit()}" step="0.0001" value="${Math.ceil(minDeposit()+0.6)}" required><span class="hint" id="fund-hint"></span></label><div class="form-grid three"><label>Paid automatically up to (<span class="limit-unit">NEAR</span>)<input name="auto" type="number" min="0.0001" step="0.0001" value="0.1" required></label><label>Maximum per payment (<span class="limit-unit">NEAR</span>)<input name="max" type="number" min="0.0001" step="0.0001" value="0.5" required></label><label>Daily limit (<span class="limit-unit">NEAR</span>)<input name="daily" type="number" min="0.0001" step="0.0001" value="1" required></label></div><label>Payees<textarea name="payees" placeholder="contractor.near, research.near"></textarea><span class="hint">NEAR accounts the agent may pay, separated by commas or new lines. You can add more later.</span></label><div id="vault-error" class="dialog-error"></div><button class="primary" type="submit">Create vault in wallet</button></form><div><div class="panel"><p class="eyebrow">What happens</p><ul class="checklist">${[['Your wallet opens','You review one call to the PayGate factory with your deposit.'],['Two accounts are created','A vault you own, with no keys, and an agent with one restricted key.'],['Funds land in your vault',`${agentNear()} NEAR funds the agent and about ${fmt(codeStorage())} NEAR is locked for the vault's code and storage, returned if you close it. The rest is spendable.`],['You come back here','PayGate checks the transaction on-chain and opens your dashboard.']].map(([t,d],i)=>`<li><span class="tick">${i+1}</span><div><strong>${t}</strong><span>${d}</span></div></li>`).join('')}</ul></div><p class="hint" style="margin-top:14px">By creating a vault you accept the <button class="text-button" data-page="Terms">Terms</button>. Choose an automatic limit you could afford to lose if the agent key were stolen.</p></div></section>`;
+ return top+`<section class="split"><form id="vault-form" class="panel"><label>Vault name<input name="name" required minlength="2" maxlength="32" pattern="[a-z0-9](?:[a-z0-9]|-(?!-))*[a-z0-9]" placeholder="acme" autocomplete="off"><span class="hint">Your vault will be <b id="vault-preview">name.${esc(config.factory)}</b>. Lowercase letters, digits and single dashes.</span></label>${config.usdc?`<label>Currency<select name="currency"><option value="NEAR">NEAR</option><option value="USDC">USDC</option></select><span class="hint" id="currency-hint">The vault holds and pays in NEAR.</span></label>`:''}<label>Initial funding (NEAR)<input name="fund" type="number" min="${minDeposit()}" step="0.0001" value="${Math.ceil(minDeposit()+0.6)}" required><span class="hint" id="fund-hint"></span></label><div class="form-grid three"><label>Paid automatically up to (<span class="limit-unit">NEAR</span>)<input name="auto" type="number" min="0" step="0.0001" value="0.1" required><span class="hint">Set to 0 to approve every payment.</span></label><label>Maximum per payment (<span class="limit-unit">NEAR</span>)<input name="max" type="number" min="0.0001" step="0.0001" value="0.5" required></label><label>Daily limit (<span class="limit-unit">NEAR</span>)<input name="daily" type="number" min="0.0001" step="0.0001" value="1" required></label></div><label>Payees<textarea name="payees" placeholder="contractor.near, research.near"></textarea><span class="hint">NEAR accounts the agent may pay, separated by commas or new lines. You can add more later.</span></label><div id="vault-error" class="dialog-error"></div><button class="primary" type="submit">Create vault in wallet</button></form><div><div class="panel"><p class="eyebrow">What happens</p><ul class="checklist">${[['Your wallet opens','You review one call to the PayGate factory with your deposit.'],['Two accounts are created','A vault you own, with no keys, and an agent with one restricted key.'],['Funds land in your vault',`${agentNear()} NEAR funds the agent and about ${fmt(codeStorage())} NEAR is locked for the vault's code and storage, returned if you close it. The rest is spendable.`],['You come back here','PayGate checks the transaction on-chain and opens your dashboard.']].map(([t,d],i)=>`<li><span class="tick">${i+1}</span><div><strong>${t}</strong><span>${d}</span></div></li>`).join('')}</ul></div><p class="hint" style="margin-top:14px">By creating a vault you accept the <button class="text-button" data-page="Terms">Terms</button>. Choose a daily limit you can afford. With automatic payments on, a stolen agent key could make several payments up to that daily limit.</p></div></section>`;
 }
 function stats(){
  const v=live();
  return `<div class="grid cols-4">${stat('Vault balance',v?`${fmt(vault.spendable)}<small>${cur()}</small>`:'—',v?'Spendable, read live from '+networkName():'No vault yet')}${stat('Spent today',v?`${fmt(vault.spent)}<small>${cur()}</small>`:'—',v?`of ${near(vault.limits.daily)} daily limit`:'Limits are set on-chain',v?meter(vault.spent,vault.limits.daily):'')}${stat('Open jobs',ws().jobs.filter(j=>OPEN.includes(j.status)).length,`${near(committed())} committed`)}${stat('Awaiting approval',ws().jobs.filter(j=>j.status==='Awaiting approval').length,v&&vault.frozen?'Vault is frozen':'Approve in your wallet')}</div>`;
 }
-function receiptsTable(list,none){
+function receiptsTable(list,none,{verifyPayments=false}={}){
  if(!list.length)return empty('doc','No payments yet',none);
- return `<div class="table-wrap"><table><thead><tr><th>Payment</th><th>Payee</th><th>Amount</th><th>Route</th><th>Transaction</th></tr></thead><tbody>${list.map(r=>`<tr><td data-label="Payment"><strong>${esc(r.job)}</strong><span class="sub">${when(r.date)} · payment #${esc(r.settlement.paymentId)}</span></td><td data-label="Payee">${payeeName(r.payee)}</td><td data-label="Amount" class="num-cell">${near(r.amount)}${r.usdEstimate?`<span class="sub">≈ ${usd(r.usdEstimate.usd)}</span>`:''}</td><td data-label="Route"><span class="status ${r.settlement.route==='auto'?'ok':'awaiting'}">${r.settlement.route==='auto'?'Paid automatically':r.settlement.route==='cross-chain'?`Sent to ${esc(chainName(r.settlement.external.chain))} via NEAR Intents`:'Paid with owner approval'}</span>${r.settlement.route==='cross-chain'?`<button class="text-button" data-action="bridge-status" data-id="${esc(r.jobId)}">Check delivery</button><span class="sub bridge-status" data-job="${esc(r.jobId)}"></span>`:''}</td><td data-label="Transaction" class="mono">${r.settlement.explorer?`<a href="${esc(r.settlement.explorer)}" target="_blank" rel="noopener">${esc(short(r.settlement.txHash))} ↗</a>`:esc(short(r.settlement.txHash))}<span class="sub">${esc(r.settlement.network)}</span></td></tr>`).join('')}</tbody></table></div>`;
+ return `<div class="table-wrap"><table><thead><tr><th>Payment</th><th>Payee</th><th>Amount</th><th>Route</th><th>Transaction</th></tr></thead><tbody>${list.map(r=>`<tr><td data-label="Payment"><strong>${esc(r.job)}</strong><span class="sub">${when(r.date)} · payment #${esc(r.settlement.paymentId)}</span></td><td data-label="Payee">${payeeName(r.payee)}</td><td data-label="Amount" class="num-cell">${fmt(r.amount)} ${esc(r.currency||r.settlement.currency||"NEAR")}${r.usdEstimate?`<span class="sub">≈ ${usd(r.usdEstimate.usd)}</span>`:''}</td><td data-label="Route"><span class="status ${r.settlement.route==='auto'?'ok':'awaiting'}">${r.settlement.route==='auto'?'Paid automatically':r.settlement.route==='cross-chain'?`Sent to ${esc(chainName(r.settlement.external.chain))} via NEAR Intents`:'Paid with owner approval'}</span>${r.settlement.route==='cross-chain'?`<button class="text-button" data-action="bridge-status" data-id="${esc(r.jobId)}">Check delivery</button><span class="sub bridge-status" data-job="${esc(r.jobId)}"></span>`:''}</td><td data-label="Transaction" class="mono">${r.settlement.explorer?`<a href="${esc(r.settlement.explorer)}" target="_blank" rel="noopener">${esc(short(r.settlement.txHash))} ↗</a>`:esc(short(r.settlement.txHash))}<span class="sub">${esc(r.settlement.network)}</span>${verifyPayments?`<button class="text-button" data-action="verify-payment" data-id="${esc(r.id)}">Verify payment</button>`: ''}</td></tr>`).join('')}</tbody></table></div>`;
 }
 function checklist(){
  const v=live(),n=v?vault.recipients.length:0,paid=ws().receipts.length;
@@ -161,7 +176,7 @@ function checklist(){
 function overview(){
  if(!state.vault)return setup();
  const v=live(),steps=[['01','Create a job',`Brief, allowlisted payee and a budget in ${cur()}.`],['02','Deliver','The agent works on NEAR AI, or you record the delivery.'],['03','Review','Read the work and see its live dollar value.'],['04','Vault decides','Small payments go out. Larger ones wait for your wallet.'],['05','Receipt','Linked to its NEAR transaction and the previous receipt.']];
- const rules=[['bolt','Automatic',v?near(vault.limits.auto):'—','Paid at once, with no approval.'],['shield','Per payment',v?near(vault.limits.max):'—','Hard ceiling, even with your approval.'],['clock','Per day',v?near(vault.limits.daily):'—','Total across all payments in a 24-hour window.']];
+ const rules=[['bolt','Automatic',v?(vault.limits.auto===0?'Owner approval':near(vault.limits.auto)):'—',v&&vault.limits.auto===0?'Every payment needs your wallet.':'Paid at once, with no approval.'],['shield','Per payment',v?near(vault.limits.max):'—','Hard ceiling, even with your approval.'],['clock','Per day',v?near(vault.limits.daily):'—','Total across all payments in a 24-hour window.']];
  return `<div class="hero"><p class="eyebrow">${v?(vault.frozen?'Vault frozen':'Vault active on '+networkName()):'Vault'}</p><h1>Agent payments, on your terms.</h1><p class="lead">Your agent asks. A NEAR contract it cannot change decides. You approve anything large in your own wallet.</p><div class="actions">${createButton()}<button class="secondary" data-doc="how-it-works">How it works</button></div></div>`+setupNotice()+
  `<section>${stats()}</section>`+
  `<section><div class="section-head"><div><p class="eyebrow">Payment flow</p><h2>How a payment moves</h2></div><button class="ghost" data-doc="how-it-works">Read more →</button></div><div class="grid cols-5 steps">${steps.map(([n,t,d])=>`<div class="step"><span class="num">${n}</span><h3>${t}</h3><p>${d}</p></div>`).join('')}</div></section>`+
@@ -209,7 +224,7 @@ function evidence(){
  const hashes=ws().receipts.length?`<details class="panel" style="margin-top:20px"><summary class="text-button">Show receipt hashes</summary><dl class="kv" style="margin-top:16px">${ws().receipts.map(r=>`<dt>${esc(r.job)}</dt><dd class="mono">${esc(r.hash)}<br>previous ${esc(r.previousHash||'none')}</dd>`).join('')}</dl></details>`:'';
  return head('Evidence','Evidence you can inspect.','Every payment links to its NEAR transaction, and every receipt to the one before it.','<button class="secondary" data-action="verify">Verify receipt chain</button><button class="secondary" data-action="export">Export JSON</button>')+
  `<div class="notice info">Receipts are hash-linked with SHA-256, so an edit to any receipt breaks the chain. The NEAR transactions are the authoritative record.<b id="verification"></b></div>`+
- `<section><div class="section-head"><div><p class="eyebrow">Receipts</p><h2>Payments</h2></div><span class="sub">${ws().receipts.length} recorded</span></div>${receiptsTable(ws().receipts,'Paid jobs appear here with their transactions.')}${hashes}</section>`+
+ `<section><div class="section-head"><div><p class="eyebrow">Receipts</p><h2>Payments</h2></div><span class="sub">${ws().receipts.length} recorded</span></div>${receiptsTable(ws().receipts,'Paid jobs appear here with their transactions.',{verifyPayments:true})}${hashes}</section>`+
  `<section class="split"><div><div class="section-head"><div><p class="eyebrow">Private inference</p><h2>NEAR AI Cloud enclave report</h2></div></div><div class="panel"><p>Fetches the public attestation report with a fresh nonce and checks it here: the quote format, the nonce binding, the gateway configuration and the model report.</p><button class="primary" data-action="attest">Check enclave report</button><div id="attestation">${reportHtml()}</div></div></div><div><div class="section-head"><div><p class="eyebrow">Accounts</p><h2>Who can do what</h2></div></div>${accounts}</div></section>`;
 }
 function controls(){
@@ -218,7 +233,7 @@ function controls(){
  const l=vault.limits;
  const payees=vault.recipients.length?`<div class="table-wrap"><table><thead><tr><th>Account</th><th>Label</th>${vault.token?'<th>USDC</th>':''}<th>Paid</th><th></th></tr></thead><tbody>${vault.recipients.map(a=>`<tr><td data-label="Account"><strong>${accountLink(a)}</strong></td><td data-label="Label"><form class="label-form inline-form" data-account="${esc(a)}"><label>Label<input name="label" maxlength="60" value="${esc(ws().payees[a]||'')}" placeholder="e.g. Research contractor"></label><button class="secondary small" type="submit">Save label</button></form></td>${vault.token?`<td data-label="USDC">${vault.registered?.[a]?'<span class="status ok">Registered</span>':`<button class="secondary small" data-action="register-payee" data-account="${esc(a)}">Register in wallet</button>`}</td>`:''}<td data-label="Paid" class="num-cell">${near(ws().receipts.filter(r=>r.payee===a).reduce((s,r)=>s+r.amount,0))}</td><td class="actions-cell"><button class="danger small" data-action="remove-payee" data-account="${esc(a)}">Remove in wallet</button></td></tr>`).join('')}</tbody></table></div>`:'<div class="notice">No payees yet.</div>';
  return top+`<section class="split"><div class="panel" id="vault-panel">${icon(vault.frozen?'pause':'shield')}<h3 style="margin-top:18px">Vault status: ${vault.frozen?'Frozen':'Active'}</h3><p>${vault.frozen?'No payment can be requested or approved until you unfreeze.':'Freezing stops every new and held payment at once. Withdrawals still work.'}</p><div class="dialog-actions"><button class="${vault.frozen?'primary':'danger'}" data-action="freeze">${vault.frozen?'Unfreeze in wallet':'Freeze in wallet'}</button></div></div><div class="panel"><p class="eyebrow">Signing</p><p>Owner changes are signed by <b>${esc(vault.owner)}</b> in your wallet. PayGate then checks the transaction on-chain.</p><button class="ghost" data-doc="approvals">Using another wallet →</button></div></section>`+
- `<section><div class="section-head"><div><p class="eyebrow">Limits</p><h2>Spending limits</h2><p>Amounts in ${cur()}. They must satisfy automatic ≤ per payment ≤ daily. The daily limit counts every payment in a rolling 24-hour window that starts with the first payment after the previous window ends. Signs <code>set_limits</code>.</p></div><button class="ghost" data-doc="limits">Choosing limits →</button></div><form id="limits-form" class="panel"><div class="form-grid three"><label>Paid automatically up to<input name="auto" type="number" min="0.0001" step="0.0001" value="${l.auto}" required><span class="hint">Sent at once by the agent key.</span></label><label>Maximum per payment<input name="max" type="number" min="0.0001" step="0.0001" value="${l.max}" required><span class="hint">Even with your approval.</span></label><label>Daily limit<input name="daily" type="number" min="0.0001" step="0.0001" value="${l.daily}" required><span class="hint">Across all payments in 24 hours.</span></label></div><button class="primary" type="submit">Update limits in wallet</button><div id="limits-error" class="dialog-error"></div></form></section>`+
+ `<section><div class="section-head"><div><p class="eyebrow">Limits</p><h2>Spending limits</h2><p>Amounts in ${cur()}. They must satisfy automatic ≤ per payment ≤ daily. The daily limit counts every payment in a rolling 24-hour window that starts with the first payment after the previous window ends. Signs <code>set_limits</code>.</p></div><button class="ghost" data-doc="limits">Choosing limits →</button></div><form id="limits-form" class="panel"><div class="form-grid three"><label>Paid automatically up to<input name="auto" type="number" min="0" step="0.0001" value="${l.auto}" required><span class="hint">Set to 0 to approve every payment.</span></label><label>Maximum per payment<input name="max" type="number" min="0.0001" step="0.0001" value="${l.max}" required><span class="hint">Even with your approval.</span></label><label>Daily limit<input name="daily" type="number" min="0.0001" step="0.0001" value="${l.daily}" required><span class="hint">Across all payments in 24 hours.</span></label></div><div class="dialog-actions"><button class="primary" type="submit">Update limits in wallet</button><button type="button" class="secondary" data-action="approval-only">Set automatic limit to 0</button></div><p class="hint">${l.auto===0?'Every new payment requires wallet approval.':'Automatic payments can add up to the daily limit.'} Changes take effect after your wallet transaction is confirmed.</p><div id="limits-error" class="dialog-error"></div></form></section>`+
  `<section><div class="section-head"><div><p class="eyebrow">Allowlist</p><h2>Payees</h2><p>The agent can pay only these accounts; the vault refuses every other recipient, even for payments you approve. Adding or removing one signs <code>set_recipient</code>. Labels are private notes kept in PayGate.</p></div></div>${payees}<form id="payee-form" class="panel inline-form" style="margin-top:20px"><label>NEAR account<input name="account" placeholder="name.near" required></label><label>Label<input name="label" maxlength="60" placeholder="Optional"></label><button class="primary" type="submit">Add in wallet</button></form><div id="payee-error" class="dialog-error"></div></section>`+(crossChainOn()?crossChainPayees():'')+closeSection();
 }
 // Closing deletes the vault account and returns all of its NEAR, including the storage locked for its code.
@@ -275,7 +290,7 @@ function render(){
  if(!state&&!PUBLIC.includes(page))page='Home';
  chrome();
  const view={Home:home,Docs:docs,Terms:()=>legal(terms),Privacy:()=>legal(privacy),Overview:overview,Jobs:jobs,Treasury:treasury,Evidence:evidence,Controls:controls,Settings:settings}[page];
- $('#content').innerHTML=(config.network==='testnet'&&page!=='Docs'?'<div class="notice info"><b>Testnet.</b> Tokens here have no value; use this to rehearse. On mainnet, the same steps move real NEAR or USDC.</div>':'')+view();
+ $('#content').innerHTML=view();
  $('#job-search')?.addEventListener('input',e=>{const pos=e.target.selectionStart;search=e.target.value;render();$('#job-search').focus();$('#job-search').setSelectionRange?.(pos,pos)});
  $('#limits-form')?.addEventListener('submit',e=>{e.preventDefault();const f=new FormData(e.target);owner('limits',{auto:Number(f.get('auto')),max:Number(f.get('max')),daily:Number(f.get('daily'))},$('#limits-error'))});
  $('#deposit-form')?.addEventListener('submit',e=>{e.preventDefault();owner('deposit',{amount:Number(new FormData(e.target).get('amount'))},$('#deposit-error'))});
@@ -306,15 +321,69 @@ function render(){
  $('#delete-form')?.addEventListener('submit',async e=>{e.preventDefault();try{await api('action',{action:'delete-account',confirm:String(new FormData(e.target).get('confirm')).trim()});state=null;page='Home';render();toast('Your data was deleted.')}catch(err){$('#delete-error').textContent=err.message}});
 }
 function dialog(id){let d=$('#'+id);if(!d){d=document.createElement('dialog');d.id=id;document.body.append(d)}return d}
+async function inspectPayment(receipt){
+ const d=dialog('payment-proof'),s=receipt.settlement,bridge=s.route==='cross-chain';
+ d.innerHTML=`<div class="dialog-heading"><h2>Verify payment</h2><button class="close" aria-label="Close payment verification">×</button></div>
+ <p><b>${esc(receipt.job)}</b> · ${esc(receipt.jobId)}</p>
+ <dl class="kv"><dt>Vault</dt><dd>${esc(s.vault)}</dd><dt>Amount</dt><dd>${fmt(receipt.amount)} ${esc(receipt.currency||'NEAR')}</dd>
+ <dt>Payee</dt><dd>${esc(receipt.payee)}</dd>
+ ${bridge?`<dt>NEAR deposit address</dt><dd>${esc(s.bridge?.depositAddress)}</dd>`:''}
+ <dt>Transaction</dt><dd class="payment-address">${s.explorer?`<a href="${esc(s.explorer)}" target="_blank" rel="noopener">${esc(s.txHash)} ↗</a>`:esc(s.txHash)}</dd></dl>
+ <p class="notice info" role="status">Checking the transaction on NEAR…</p>
+ ${bridge?'<p class="hint">This checks the deposit to NEAR Intents. Use Check delivery for the destination chain.</p>':''}`;
+ d.querySelector('.close').onclick=()=>d.close();
+ if(!d.open)d.showModal();
+ const status=d.querySelector('[role="status"]');
+ try{
+  await api('verify-payment?'+new URLSearchParams({receipt:receipt.id}));
+  status.textContent=bridge?'NEAR deposit verified.':'NEAR payment verified.';
+ }catch(err){
+  status.textContent='Could not verify this payment. '+err.message;
+ }
+}
+function paymentPolicy(j,v){
+ if(!v?.configured||v.error)return '<p class="notice info">Vault checks are unavailable. The contract still applies its rules when you submit.</p>';
+ const x=ext(j.payee),waiting=j.status==='Awaiting approval';
+ const allowed=x?crossChainOn()&&(state.externalPayees||[]).includes(j.payee):v.recipients.includes(j.payee);
+ const dailyLeft=Math.max(0,v.limits.daily-v.spent);
+ const overDaily=Math.round(j.amount*1e4)>Math.round(dailyLeft*1e4);
+ const rows=[
+  ['Vault',v.closing?'Closing':v.frozen?'Frozen · unfreeze in Controls':'Open for payments',v.closing||v.frozen],
+  ['Payee',allowed?'On your allowlist':'Not available on your allowlist · check Controls',!allowed],
+  ['Per payment',`Limit ${near(v.limits.max)}`,j.amount>v.limits.max?'Over limit':''],
+  ['Daily budget',`${near(dailyLeft)} left of ${near(v.limits.daily)}`,overDaily?'Over budget':''],
+  ['Vault balance',`${near(v.spendable)} spendable`,j.amount>v.spendable?'Insufficient funds':'']
+ ];
+ if(v.token&&!x&&allowed&&v.registered?.[j.payee]!==true)rows.push(['USDC registration','Not confirmed · check Controls before paying',true]);
+ if(waiting&&!x) {
+  const held=v.pending?.some(p=>String(p.id)===String(j.payment.paymentId));
+  rows.push(['Held request',held?`Payment #${j.payment.paymentId} is in the vault`:'Missing from the vault · check the transaction before signing',!held]);
+ }
+ return `<section class="payment-policy" aria-label="Vault policy preview"><h3>Vault policy preview</h3><dl class="kv">${rows.map(([label,detail,issue])=>`<dt>${esc(label)}</dt><dd>${esc(detail)}${issue?` <span class="status bad">${esc(issue===true?'Check':issue)}</span>`:''}</dd>`).join('')}</dl><p class="hint">Based on the latest vault read. The contract checks the rules again when the transaction runs.</p></section>`;
+}
 function reviewDialog(j){
  const d=dialog('review-dialog'),auto=live()&&j.amount<=vault.limits.auto,waiting=j.status==='Awaiting approval';
  const x=ext(j.payee);
- const actions=waiting&&x?`<p>Cross-chain payout of ${near(j.amount)} to <b>${esc(x.name)}</b> <span class="mono">${esc(x.address)}</span>. Approving gets a live NEAR Intents quote, then your wallet signs one payment from the vault to the quote's deposit address. If the swap cannot complete, the USDC is refunded to ${esc(state.account)}.</p><div class="dialog-actions"><button class="primary" data-action="approve" data-id="${esc(j.id)}">Approve in wallet</button><button class="danger" data-action="reject-external" data-id="${esc(j.id)}">Reject</button></div>`:waiting?`<p>The agent requested payment #${esc(j.payment.paymentId)}. Your vault holds it until you approve it in your wallet.</p><div class="dialog-actions"><button class="primary" data-action="approve" data-id="${esc(j.id)}">Approve in wallet</button><button class="danger" data-action="reject" data-id="${esc(j.id)}">Reject in wallet</button></div><form id="hash-form" class="inline-form" style="margin-top:22px"><label>Already signed? Transaction hash<input name="hash" placeholder="Paste the transaction hash" required></label><button class="secondary" type="submit">Record</button></form>`:`<p>${x?'A payee on another chain: you approve every cross-chain payout in your wallet.':auto?'Within the automatic limit: the agent key pays this at once.':'Above the automatic limit: the agent requests it, then you approve in your wallet.'}</p>${live()?`<dl class="kv"><dt>Left today</dt><dd>${near(Math.max(0,vault.limits.daily-vault.spent))} of ${near(vault.limits.daily)}${j.amount>vault.limits.daily-vault.spent?' <span class="status bad">Over today\'s limit</span>':''}</dd><dt>Vault balance</dt><dd>${near(vault.spendable)}${j.amount>vault.spendable?' <span class="status bad">Not enough</span>':''}</dd><dt>Per payment</dt><dd>up to ${near(vault.limits.max)}</dd></dl>`:''}<div class="dialog-actions"><button class="primary" data-action="confirm-pay" data-id="${esc(j.id)}">${auto&&!x?'Pay '+near(j.amount):'Request payment'}</button></div>`;
- d.innerHTML=`<div class="dialog-heading"><h2>${waiting?'Approve payment':'Review delivery'}</h2><button class="close" aria-label="Close review">×</button></div><p><b>${esc(j.title)}</b> · ${esc(j.id)}</p><p>${esc(j.brief)}</p><div class="dialog-meta"><div><span>Amount</span><b>${near(j.amount)}</b></div><div><span>Payee</span><b>${esc(payeeText(j.payee))}</b></div><div><span>Value</span><b id="quote">${j.quote?`≈ ${usd(j.quote.usd)}`:waiting?'—':'Pricing…'}</b></div></div><p class="eyebrow">${j.inference?`Written on NEAR AI Cloud · ${esc(j.inference.model)}`:esc(j.source||'Delivery')}</p><div class="notice info delivery">${esc(j.deliverable||'')}</div>${actions}<div id="review-error" class="dialog-error"></div>`;
+ const actions=waiting&&x?`<p>Cross-chain payout of ${near(j.amount)} to <b>${esc(x.name)}</b> at the address shown above. Approving gets a live NEAR Intents quote, then your wallet signs one payment from the vault to the quote's deposit address. If the swap cannot complete, the USDC is refunded to ${esc(state.account)}.</p><div class="dialog-actions"><button class="primary" data-action="approve" data-id="${esc(j.id)}">Approve in wallet</button><button class="danger" data-action="reject-external" data-id="${esc(j.id)}">Reject</button></div>`:waiting?`<p>The agent requested payment #${esc(j.payment.paymentId)}. Your vault holds it until you approve it in your wallet.</p><div class="dialog-actions"><button class="primary" data-action="approve" data-id="${esc(j.id)}">Approve in wallet</button><button class="danger" data-action="reject" data-id="${esc(j.id)}">Reject in wallet</button></div>`:`<p>${x?'A payee on another chain: you approve every cross-chain payout in your wallet.':auto?'Within the automatic limit: the agent key pays this at once.':live()&&vault.limits.auto===0?'Your vault requires wallet approval for every payment.':'Above the automatic limit: the agent requests it, then you approve in your wallet.'}</p><div class="dialog-actions"><button class="primary" data-action="confirm-pay" data-id="${esc(j.id)}">${auto&&!x?'Pay '+near(j.amount):'Request payment'}</button></div>`;
+ const hashForm=`<form id="hash-form" class="inline-form"><label>Transaction hash<input name="hash" placeholder="Paste the transaction hash" required></label><button class="secondary" type="submit">Record</button></form>`;
+ const recovery=waiting?`<section class="payment-recovery"><p>Already signed in your wallet?</p>${hashForm}</section>`:!x?`<details class="payment-recovery"><summary>Record an existing payment</summary><p>If this job was already paid, copy the transaction hash from the vault's history${state.vault?.vault?` at ${accountLink(state.vault.vault)}`:''}.</p>${hashForm}</details>`:'';
+ const previous=j.lastPaymentAttempt;
+ const failed=!waiting&&previous?.result==='failed'?`<p class="notice info">The last transfer failed and the vault restored its payment accounting. Check the destination before requesting payment again.${previous.explorer?` <a href="${esc(previous.explorer)}" target="_blank" rel="noopener">View failed transaction ↗</a>`:''}</p>`:'';
+ d.innerHTML=`<div class="dialog-heading"><h2>${waiting?'Approve payment':'Review delivery'}</h2><button class="close" aria-label="Close review">×</button></div><p><b>${esc(j.title)}</b> · ${esc(j.id)}</p><p>${esc(j.brief)}</p><div class="dialog-meta"><div><span>Amount</span><b>${near(j.amount)}</b></div><div><span>Payee</span>${ws().payees[j.payee]?`<b>${esc(ws().payees[j.payee])}</b>`:""}<code class="payment-address">${esc(x?.address||j.payee)}</code>${x?`<span>${esc(x.name)}</span>`:""}</div><div><span>Value</span><b id="quote">${j.quote?`≈ ${usd(j.quote.usd)}`:waiting?'—':'Pricing…'}</b></div></div><p class="eyebrow">${j.inference?`Written on NEAR AI Cloud · ${esc(j.inference.model)}`:esc(j.source||'Delivery')}</p><div class="notice info delivery">${esc(j.deliverable||'')}</div>${failed}${paymentPolicy(j,vault)}${actions}${recovery}<div id="review-error" class="dialog-error"></div>`;
  d.querySelector('.close').onclick=()=>d.close();
- d.querySelector('#hash-form')?.addEventListener('submit',async e=>{e.preventDefault();if(await mutate('confirm',{id:j.id,txHash:String(new FormData(e.target).get('hash')).trim()},$('#review-error'))){d.close();toast('Payment recorded from the chain.')}});
+ d.querySelector('#hash-form')?.addEventListener('submit',async e=>{
+  e.preventDefault();
+  const hash=String(new FormData(e.target).get('hash')).trim();
+  if(e.submitter)e.submitter.disabled=true;
+  try{await recordPayment(j.id,hash,d.querySelector('#review-error'))}
+  finally{if(e.submitter)e.submitter.disabled=false}
+ });
  if(!d.open)d.showModal();
- if(!j.quote&&!waiting)api('action',{action:'quote',id:j.id}).then(s=>{state=s;const q=ws().jobs.find(x=>x.id===j.id)?.quote;if(q&&$('#quote'))$('#quote').textContent=`≈ ${usd(q.usd)}`}).catch(()=>{if($('#quote'))$('#quote').textContent='Unavailable'});
+ const quoteNode=d.querySelector('#quote');
+ if(!j.quote&&!waiting)api('action',{action:'quote',id:j.id}).then(s=>{
+  const q=s.workspace?.jobs.find(x=>x.id===j.id)?.quote;
+  quoteNode.textContent=q?`≈ ${usd(q.usd)}`:'Unavailable';
+ }).catch(()=>{quoteNode.textContent='Unavailable'});
 }
 function recordDialog(j){
  const d=dialog('record-dialog');
@@ -330,6 +399,10 @@ document.addEventListener('click',async e=>{
  if(b.dataset.filter){filter=b.dataset.filter;render();return}
  const action=b.dataset.action,j=state?.workspace?.jobs.find(j=>j.id===b.dataset.id);
  if(action==='signin')return signIn();
+ if(action==='approval-only'){
+  const input=$('#limits-form input[name="auto"]');
+  if(input){input.value='0';input.focus()}
+ }
  if(action==='new'){$('#form-error').textContent='';$('#budget-label').textContent=`Budget (${cur()})`;$('#payee-select').innerHTML=[...vault.recipients,...(crossChainOn()?state.externalPayees||[]:[])].map(a=>`<option value="${esc(a)}">${esc(ws().payees[a]?ws().payees[a]+' · '+rawPayee(a):rawPayee(a))}</option>`).join('');$('#budget-hint').textContent=`Up to ${near(vault.limits.max)} per payment · ${near(Math.max(0,vault.spendable-committed()))} available`;$('#job-dialog').showModal()}
  if(b.classList.contains('close')&&b.closest('#job-dialog'))$('#job-dialog').close();
  if(action==='logout'){await api('logout',{}).catch(()=>{});if(connector)await connector.disconnect().catch(()=>{});state=null;vault={configured:false};page='Home';render()}
@@ -343,6 +416,10 @@ document.addEventListener('click',async e=>{
  if(action==='alerts-test'){b.disabled=true;if(await mutate('alerts-test'))toast(state.alerts?.last?.error?'The test alert failed: '+state.alerts.last.error:'Test alert sent.');b.disabled=false}
  if(action==='telegram-connect'){try{const r=await api('action',{action:'alerts-telegram'});$('#telegram-link').innerHTML=`<p><a class="primary" href="${esc(r.telegramLink)}" target="_blank" rel="noopener">Open the PayGate bot</a></p><p class="hint">After pressing Start in Telegram, reload this page.</p>`}catch(err){toast(err.message)}}
  if(action==='verify'){try{const r=await api('verify');$('#verification').textContent=r.valid?` All ${r.count} receipt hashes and links match.`:' Receipt integrity check failed.'}catch(err){toast(err.message)}}
+ if(action==='verify-payment'){
+  const receipt=ws().receipts.find(r=>r.id===b.dataset.id);
+  if(receipt)await inspectPayment(receipt);
+ }
  if(action==='attest'){b.disabled=true;$('#attestation').innerHTML='<p>Fetching report…</p>';try{report=await api('attestation')}catch(err){report={error:err.message}}b.disabled=false;$('#attestation').innerHTML=reportHtml()}
  if(action==='export'){const blob=new Blob([JSON.stringify({account:state.account,vault:vault.vault||null,network:config.network,receipts:ws().receipts},null,2)],{type:'application/json'}),a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='paygate-receipts.json';a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1000)}
  if(action==='run'&&j){b.disabled=true;b.textContent='Agent working…';await mutate('run',{id:j.id});b.disabled=false}

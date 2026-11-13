@@ -9,7 +9,7 @@ export async function startChainApp(port,extraEnv={}){
  const server=spawn(process.execPath,['src/server.mjs'],{env:{...process.env,PUBLIC_URL:'',RAILWAY_PUBLIC_DOMAIN:'',DATABASE_URL:'',PAYGATE_SECRET:'',...extraEnv,PORT:String(port),DATA_DIR:dir,NEAR_NETWORK:'sandbox',NEAR_RPC_URL:chain.rpcUrl,PAYGATE_FACTORY:chain.factory,PAYGATE_DEV_ACCOUNTS:JSON.stringify(chain.customers),PAYGATE_RELAYER_ACCOUNT:chain.relayer.accountId,PAYGATE_RELAYER_KEY:chain.relayer.key,PAYGATE_USDC:chain.usdc},stdio:['ignore','pipe','inherit']});
  const stop=async()=>{server.kill();await new Promise(done=>server.exitCode!==null?done():server.once('exit',done));await chain.sandbox.tearDown();await rm(dir,{recursive:true,force:true})};
  try{await new Promise((ready,fail)=>{server.stdout.once('data',ready);server.once('exit',code=>fail(Error('Server exited: '+code)))})}catch(e){await stop();throw e}
- return {...chain,server,stop};
+ return {...chain,server,stop,dataDir:dir};
 }
 if(import.meta.url===pathToFileURL(process.argv[1]).href){
  const port=Number(process.env.PORT||3000),{factory,customers,payee,stop}=await startChainApp(port);

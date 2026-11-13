@@ -73,3 +73,9 @@ footer{border-top:1px solid var(--line)}.footer-inner{max-width:1240px;margin:au
 @media(max-width:760px){.hero.landing{padding:44px 24px}.hero.landing h1{font-size:38px}.footer-links{flex-wrap:wrap;gap:12px}}
 .brand .glyph{width:30px;height:30px;display:block}
 .check{display:flex;align-items:center;gap:8px;flex:0 0 auto;font-weight:500;margin:0 0 12px}.check input{width:auto;margin:0}
+.payment-policy{margin:20px 0;padding:16px;border:1px solid var(--line);border-radius:10px}
+.payment-policy h3{margin:0 0 10px;font-size:15px}
+.payment-policy .hint{margin:10px 0 0}
+.payment-address{display:block;overflow-wrap:anywhere;font-size:12px}
+.payment-recovery{margin-top:20px}
+.payment-recovery summary{cursor:pointer;color:var(--ink);font-weight:600}

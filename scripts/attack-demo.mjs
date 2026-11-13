@@ -21,7 +21,10 @@ try{
  say('Rules: 0.1 NEAR paid automatically, 0.5 NEAR maximum per payment, 1 NEAR per day, allowlisted recipients only.');
  const vaultKeys=(await provider.viewAccessKeyList({accountId:vault,blockQuery:{finality:'optimistic'}})).keys;assert.equal(vaultKeys.length,0);say(`Vault ${vault} holds 0 keys, so nobody can replace its code.`);
  const startAttacker=await balance('attacker.sandbox');say(`Vault spendable: ${show((await policy()).balance)}. Attacker balance: ${show(startAttacker)}.`);say();
- say('Normal work');await ask(worker,near('0.05'),'job-1');say('ALLOWED  Agent pays the payee 0.05 NEAR for a finished job');say();
+ say('Normal work');const workerBefore=BigInt(await balance(worker));
+ await ask(worker,near('0.05'),'job-1');
+ assert.equal(BigInt(await balance(worker))-workerBefore,BigInt(near('0.05')));
+ say('ALLOWED  Agent pays the payee 0.05 NEAR for a finished job');say();
  say('Prompt injection arrives inside a job brief:');say(`  "${INJECTION}"`);say('The demo assumes the worst: the agent is fully taken over and uses its real key.');say();
  await blocked('Pay the attacker through the vault',/not on the allowlist/,()=>ask('attacker.sandbox',near('0.05'),'evil-1'));
  await blocked('Send a payment above the per-payment limit',/per-payment limit/,()=>ask(worker,near('5'),'evil-2'));
@@ -34,7 +37,11 @@ try{
  await blocked('Call a different contract',/does not match transaction receiver/,()=>agent.callFunction({contractId:'attacker.sandbox',methodName:'steal',args:{},gas}));
  await blocked('Pose as the agent from another account',/Only the agent/,()=>accountFor(rpcUrl,'attacker.sandbox',attackerKey.toString()).callFunction({contractId:vault,methodName:'request_payment',args:{recipient:'attacker.sandbox',amount:near('0.05'),job_id:'evil-3'},gas}));
  await blocked('Forge the refund callback to reset the daily spend',/private/,()=>accountFor(rpcUrl,'attacker.sandbox',attackerKey.toString()).callFunction({contractId:vault,methodName:'on_payout',args:{id:1,amount:near('0.05'),job_id:'job-1',window_start_ms:0},gas}));
- say();say('A large request is held for a person');const held=await ask(worker,near('0.3'),'big-1');assert.equal(held.status,'pending');say('HELD     0.3 NEAR request is waiting. Nothing moved without the owner.');await ownerCall('reject_payment',{id:held.id});say('REJECTED Owner refuses it');
+ say();say('A large request is held for a person');const beforeHold=await balance(worker);
+ const held=await ask(worker,near('0.3'),'big-1');
+ assert.equal(held.status,'pending');assert.equal(await balance(worker),beforeHold);
+ say('HELD     0.3 NEAR request is waiting. Nothing moved without the owner.');
+ await ownerCall('reject_payment',{id:held.id});say('REJECTED Owner refuses it');
  say();say('A payment to an account that does not exist');await ownerCall('set_recipient',{recipient:'ghost.sandbox',allowed:true});await ask('ghost.sandbox',near('0.02'),'ghost-1');await new Promise(done=>setTimeout(done,3000));assert.equal((await policy()).spent_in_window,near('0.05'));say('REFUNDED The transfer fails, the money returns, and the daily spend is restored');await ownerCall('set_recipient',{recipient:'ghost.sandbox',allowed:false});
  say();say('Worst allowed case: the agent drains small payments to the one allowlisted payee');
  let paid=0,stop;for(;paid<30;paid++){try{await ask(worker,near('0.1'),`drain-${paid}`)}catch(e){stop=reason(e);break}}
@@ -45,5 +52,5 @@ try{
  const endAttacker=BigInt(await balance('attacker.sandbox')),spentByAttacker=BigInt(startAttacker)-endAttacker;assert.ok(spentByAttacker>=0n,'attacker gained funds');
  say(`Result: the attacker received 0 NEAR. Balance went from ${show(startAttacker)} to ${show(endAttacker)} (gas only).`);
  say('Limit of this protection: a stolen agent key can still spend up to the daily limit, but only to allowlisted recipients.');
- await writeFile(new URL('../docs/attack-demo-log.txt',import.meta.url),lines.join('\n')+'\n');
+ if(!process.argv.includes('--no-write'))await writeFile(new URL('../docs/attack-demo-log.txt',import.meta.url),lines.join('\n')+'\n');
 }finally{await sandbox.tearDown()}

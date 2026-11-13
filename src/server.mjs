@@ -5,7 +5,7 @@ import {pathToFileURL} from 'node:url';
 import {KeyPair,decodeTransaction} from 'near-api-js';
 import {transition,verify,external,CLIENT_ACTIONS} from './domain.mjs';
 import {usdValue,attestation,deliver,integrations,crossChainAssets,crossChainQuote,crossChainSubmit,crossChainStatus} from './near.mjs';
-import {vaultClient,factoryClient,verifySignIn,signNep413,accountFor,reason,toNear,toYocto,toUnits,isAccountId,NETWORKS,USDC,TOKEN_STORAGE} from './chain.mjs';
+import {vaultClient,factoryClient,verifySignIn,signNep413,accountFor,reason,toNear,toYocto,toUnits,isAccountId,verifyPaymentReceipt,NETWORKS,USDC,TOKEN_STORAGE} from './chain.mjs';
 import {openStore} from './store.mjs';
 import {sealer} from './secrets.mjs';
 import {checkWebhook,sendWebhook,telegram} from './alerts.mjs';
@@ -86,9 +86,15 @@ function vaultFor(account,profile){
 const need=v=>{if(!v)throw Error('Create your vault first.');return v};
 async function vaultView(v){
  const [p,recipients,pending]=await Promise.all([v.policy(),v.recipients(),v.pending()]);
- return {configured:true,network,vault:v.vault,owner:v.owner,agent:p.agent,frozen:p.frozen,spendable:p.spendable,spent:p.spent,nearBalance:p.nearBalance,windowEndsMs:p.window_ends_ms,limits:p.limits,recipients,currency:v.symbol,token:v.token,registered:await v.registered(recipients),pending:pending.map(x=>({...x,amount:v.fromUnits(x.amount)}))};
+ return {configured:true,network,vault:v.vault,owner:v.owner,agent:p.agent,frozen:p.frozen,closing:Boolean(p.closing),spendable:p.spendable,spent:p.spent,nearBalance:p.nearBalance,windowEndsMs:p.window_ends_ms,limits:p.limits,recipients,currency:v.symbol,token:v.token,registered:await v.registered(recipients),pending:pending.map(x=>({...x,amount:v.fromUnits(x.amount)}))};
 }
 const amount=(n,label,decimals=24)=>{if(typeof n!=='number'||!Number.isFinite(n)||n<0.0001||n>1e9)throw Error(`Enter ${label} from 0.0001.`);return toUnits(n,decimals)};
+function spendingLimits({auto,max,daily},decimals){
+ const limits={auto_limit:auto===0?'0':amount(auto,'an automatic limit',decimals),
+  max_payment:amount(max,'a per-payment limit',decimals),daily_limit:amount(daily,'a daily limit',decimals)};
+ if(!(auto<=max&&max<=daily))throw Error('Limits must satisfy automatic ≤ maximum payment ≤ daily.');
+ return limits;
+}
 const validName=n=>typeof n==='string'&&n.length>=2&&n.length<=32&&/^[a-z0-9](?:[a-z0-9]|-(?!-))*[a-z0-9]$/.test(n)&&!n.endsWith('-agent');
 // What the browser sees of an account: never a key, sealed or not.
 async function snapshot(account){
@@ -124,6 +130,8 @@ if(tg){
  }).catch(e=>console.error('Telegram alerts are off: '+e.message));
 }
 const paying=new Set();
+const hasPaymentConfirmation=(workspace,job,hash)=>Boolean(hash&&job&&(job.lastPaymentAttempt?.txHash===hash||
+ workspace.receipts.some(r=>r.jobId===job.id&&r.settlement?.txHash===hash)));
 // Turns a request into what the server, the chain or NEAR AI did. Only these results reach the workspace.
 async function act(c,account,req){
  const record=await store.get(account),profile=record?.profile||{},workspace=record?.workspace,v=vaultFor(account,profile);
@@ -143,42 +151,90 @@ async function act(c,account,req){
  }
  if(c.action==='quote'){if(j?.status!=='Review')return snapshot(account);return commit({action:'quote',id:c.id,quote:v?.token?{source:'USDC',usd:j.amount,usdc:String(j.amount)}:await usdValue(j)})}
  if(c.action==='pay'){
-  need(v);if(!j)throw Error('Job not found.');if(j.status==='Awaiting approval')throw Error('This payment is waiting for your approval in your wallet.');if(j.status!=='Review')throw Error('Job must be awaiting review.');
-  if((await v.policy()).frozen)throw Error('The vault is frozen. Unfreeze it in Controls first.');
-  if(paying.has(key))throw Error('This payment is already in progress.');
-  // A payee on another chain is always approved by the owner, who signs the payout to a fresh NEAR Intents deposit address.
-  const x=external(j.payee);
-  if(x){
-   if(!crossChain(v))throw Error('Cross-chain payouts are not available on this PayGate.');
-   if(!(profile.externalPayees||[]).includes(j.payee))throw Error('That payee is no longer on your cross-chain list.');
-   alert(account,'payment.held',`PayGate: ${j.amount} ${v.symbol} to ${x.name} ${x.address} for "${j.title}" is waiting for your approval.`,{jobId:j.id,amount:j.amount,payee:j.payee});
-   return commit({action:'requested',id:j.id,payment:{network,vault:v.vault,currency:v.symbol,token:v.token,paymentId:null,amountUnits:v.units(j.amount),external:x}});
-  }
-  paying.add(key);try{
+  if(!j){need(v);throw Error('Job not found.');}
+  // Clients can repeat a request after losing the response. Return the recorded outcome before reading the chain.
+  if(j.status==='Paid'||j.status==='Awaiting approval')return snapshot(account);
+  need(v);
+  if(j.status!=='Review')throw Error('Job must be awaiting review.');
+  if(paying.has(key))throw Object.assign(Error('This payment is in progress. Check the job status before retrying.'),{status:409});
+  paying.add(key);
+  try{
+   if((await v.policy()).frozen)throw Error('The vault is frozen. Unfreeze it in Controls first.');
+   // The owner signs cross-chain payouts to a fresh NEAR Intents deposit address.
+   const x=external(j.payee);
+   if(x){
+    if(!crossChain(v))throw Error('Cross-chain payouts are not available on this PayGate.');
+    if(!(profile.externalPayees||[]).includes(j.payee))throw Error('That payee is no longer on your cross-chain list.');
+    const result=await commit({action:'requested',id:j.id,payment:{network,vault:v.vault,currency:v.symbol,token:v.token,paymentId:null,amountUnits:v.units(j.amount),external:x,attemptId:randomBytes(16).toString('hex')}});
+    alert(account,'payment.held',`PayGate: ${j.amount} ${v.symbol} to ${x.name} ${x.address} for "${j.title}" is waiting for your approval.`,{jobId:j.id,amount:j.amount,payee:j.payee});
+    return result;
+   }
    const r=await v.request(j,key),settlement={network,vault:v.vault,currency:v.symbol,token:v.token,paymentId:r.paymentId,amountUnits:r.amountYocto,requestTx:r.txHash};
-   if(r.status==='sent'){alert(account,'payment.paid',`PayGate: paid ${j.amount} ${v.symbol} to ${j.payee} for "${j.title}".`,{jobId:j.id,amount:j.amount,payee:j.payee,txHash:r.txHash});return commit({action:'paid',id:j.id,settlement:{...settlement,route:'auto',txHash:r.txHash,explorer:v.explorer(r.txHash)}})}
+   if(r.status==='sent'){
+    const result=await commit({action:'paid',id:j.id,settlement:{...settlement,route:'auto',agent:v.agent,txHash:r.txHash,txSigner:r.txSigner,explorer:v.explorer(r.txHash)}});
+    alert(account,'payment.paid',`PayGate: paid ${j.amount} ${v.symbol} to ${j.payee} for "${j.title}".`,{jobId:j.id,amount:j.amount,payee:j.payee,txHash:r.txHash});
+    return result;
+   }
+   const result=await commit({action:'requested',id:j.id,payment:settlement});
    alert(account,'payment.held',`PayGate: ${j.amount} ${v.symbol} to ${j.payee} for "${j.title}" is waiting for your approval.`,{jobId:j.id,amount:j.amount,payee:j.payee,paymentId:r.paymentId});
-   return commit({action:'requested',id:j.id,payment:settlement});
+   return result;
   }finally{paying.delete(key)}
  }
  if(c.action==='confirm'){
-  need(v);if(j?.status!=='Awaiting approval')throw Error('This job is not waiting for approval.');
+  if(hasPaymentConfirmation(workspace,j,c.txHash))return snapshot(account);
+  need(v);
+  const recovering=j?.status==='Review'&&!external(j.payee);
+  if(!recovering&&j?.status!=='Awaiting approval')throw Error('This job is not waiting for a payment confirmation.');
+  const payment=j.payment;
+  // Two tabs can record the same transaction at once. Recheck the job inside the storage transaction.
+  async function recordConfirmation(command,onRecorded){
+   let recorded=false;
+   await store.update(account,r=>{
+    const current=r.workspace.jobs.find(job=>job.id===j.id);
+    if(hasPaymentConfirmation(r.workspace,current,c.txHash))return r;
+    if(current?.status!==j.status||r.profile.vault?.vault!==v.vault||
+       (!recovering&&(current.payment?.vault!==payment.vault||
+       current.payment?.paymentId!==payment.paymentId||current.payment?.attemptId!==payment.attemptId))){
+     throw Error('The payment request changed while confirming. Reload the job and check its transaction history.');
+    }
+    const workspace=transition(r.workspace,{...command,id:j.id});
+    recorded=true;
+    return {...r,workspace};
+   });
+   if(recorded)onRecorded?.();
+   return snapshot(account);
+  }
+  if(recovering){
+   const result=await v.confirmAutomatic(c.txHash,j,key);
+   const settlement={...result,network,vault:v.vault,currency:v.symbol,token:v.token,route:'auto',agent:v.agent,requestTx:c.txHash,txHash:c.txHash,explorer:v.explorer(c.txHash)};
+   return recordConfirmation({action:'paid',settlement},()=>{
+    alert(account,'payment.paid',`PayGate: recorded the existing payment of ${j.amount} ${v.symbol} to ${j.payee} for "${j.title}".`,{jobId:j.id,amount:j.amount,payee:j.payee,txHash:c.txHash});
+   });
+  }
   if(j.payment.external){
    // Every quote issued for this job is accepted, so a wallet that signs an earlier approval is still recorded.
    const quotes=j.payment.quotes||(j.payment.bridge?[j.payment.bridge]:[]);if(!quotes.length)throw Error('Approve the payment first.');
    const {outcome,args}=await v.confirmOwner(c.txHash,['pay_external'],a=>a?.job_id===key&&a?.amount===j.payment.amountUnits&&quotes.some(q=>q.depositAddress===a?.recipient));
    const b=quotes.find(q=>q.depositAddress===args.recipient);
-   const id=v.sentId(outcome,key);
-   if(id==null||v.found(outcome,'payment_failed',id))throw Error('The payout did not reach NEAR Intents and the funds returned to the vault. Approve it again for a new quote.');
-   crossChainSubmit(c.txHash,b.depositAddress);
-   alert(account,'payment.paid',`PayGate: sent ${j.amount} ${v.symbol} to ${j.payment.external.name} ${j.payment.external.address} for "${j.title}" through NEAR Intents.`,{jobId:j.id,amount:j.amount,payee:j.payee,txHash:c.txHash});
-   const {quotes:_,...payment}=j.payment;
-   return commit({action:'paid',id:j.id,settlement:{...payment,bridge:b,paymentId:id,route:'cross-chain',txHash:c.txHash,explorer:v.explorer(c.txHash)}});
+   const {id,status}=v.payoutResult(outcome,{jobId:key,recipient:args.recipient,amount:args.amount});
+   if(status==='failed')throw Error('The payout did not reach NEAR Intents and the vault restored its balance. Approve it again for a new quote.');
+   const {quotes:_,...settlement}=payment;
+   return recordConfirmation({action:'paid',settlement:{...settlement,bridge:b,paymentId:id,route:'cross-chain',txHash:c.txHash,explorer:v.explorer(c.txHash)}},()=>{
+    crossChainSubmit(c.txHash,b.depositAddress);
+    alert(account,'payment.paid',`PayGate: sent ${j.amount} ${v.symbol} to ${payment.external.name} ${payment.external.address} for "${j.title}" through NEAR Intents.`,{jobId:j.id,amount:j.amount,payee:j.payee,txHash:c.txHash});
+   });
   }
-  const {outcome,method}=await v.confirmOwner(c.txHash,['approve_payment','reject_payment'],a=>a?.id===j.payment.paymentId);
-  if(method==='reject_payment')return commit({action:'released',id:j.id});
-  if(v.found(outcome,'payment_failed',j.payment.paymentId))throw Error(`The transfer to ${j.payee} failed and the funds returned to the vault. Check that the account exists.`);
-  return commit({action:'paid',id:j.id,settlement:{...j.payment,route:'owner-approved',txHash:c.txHash,explorer:v.explorer(c.txHash)}});
+  const {outcome,method}=await v.confirmOwner(c.txHash,['approve_payment','reject_payment'],a=>String(a?.id)===String(payment.paymentId));
+  const release=result=>recordConfirmation({action:'released',attempt:{result,txHash:c.txHash,explorer:v.explorer(c.txHash)}});
+  if(method==='reject_payment'){
+   if(!v.rejected(outcome,payment.paymentId))throw Error('The vault did not report rejecting this payment.');
+   return release('rejected');
+  }
+  const {status}=v.payoutResult(outcome,{jobId:key,id:payment.paymentId,recipient:j.payee,amount:payment.amountUnits??v.units(j.amount)});
+  if(status==='failed')return release('failed');
+  return recordConfirmation({action:'paid',settlement:{...payment,route:'owner-approved',txHash:c.txHash,explorer:v.explorer(c.txHash)}},()=>{
+   alert(account,'payment.paid',`PayGate: paid ${j.amount} ${v.symbol} to ${j.payee} for "${j.title}" after your approval.`,{jobId:j.id,amount:j.amount,payee:j.payee,txHash:c.txHash});
+  });
  }
  if(c.action==='owner'){
   need(v);const link=(method,args)=>v.ownerLink(method,args,callbackFor(req));
@@ -186,6 +242,7 @@ async function act(c,account,req){
    // Nothing is held on-chain for a cross-chain payee, so rejecting needs no wallet. Approving fetches a fresh quote.
    if(c.kind==='reject')return commit({action:'released',id:j.id});
    if(!crossChain(v))throw Error('Cross-chain payouts are not available on this PayGate.');
+   if(!(profile.externalPayees||[]).includes(j.payee))throw Error('That payee is no longer on your cross-chain list.');
    const x=j.payment.external,bridge=await crossChainQuote({originAsset:v.token,amountUnits:j.payment.amountUnits,chain:x.chain,address:x.address,refundTo:account});
    await commit({action:'bridge-quote',id:j.id,bridge});
    return {...await link('pay_external',{recipient:bridge.depositAddress,amount:j.payment.amountUnits,job_id:key}),bridge};
@@ -193,7 +250,7 @@ async function act(c,account,req){
   if(c.kind==='approve'||c.kind==='reject'){if(j?.status!=='Awaiting approval')throw Error('This job is not waiting for approval.');return link(c.kind+'_payment',{id:j.payment.paymentId})}
   if(c.kind==='freeze'){if(typeof c.frozen!=='boolean')throw Error('Invalid freeze state.');return link('set_frozen',{frozen:c.frozen})}
   if(c.kind==='payee'){if(!isAccountId(c.account))throw Error('Enter a valid NEAR account, such as name.near.');if(typeof c.allowed!=='boolean')throw Error('Invalid payee change.');return link('set_recipient',{recipient:c.account,allowed:c.allowed})}
-  if(c.kind==='limits'){const l={auto_limit:amount(c.auto,'limits',v.decimals),max_payment:amount(c.max,'limits',v.decimals),daily_limit:amount(c.daily,'limits',v.decimals)};if(!(c.auto<=c.max&&c.max<=c.daily))throw Error('Limits must satisfy automatic ≤ maximum payment ≤ daily.');return link('set_limits',{limits:l})}
+  if(c.kind==='limits')return link('set_limits',{limits:spendingLimits(c,v.decimals)});
   if(c.kind==='withdraw')return link('withdraw',{amount:amount(c.amount,'an amount',v.decimals)});
   // Closing clears the vault's records in batches before deleting it, so it gets the most gas a transaction allows.
   if(c.kind==='close')return v.ownerLink('close',{},callbackFor(req),300000000000000n);
@@ -208,8 +265,7 @@ async function act(c,account,req){
   if(v)throw Error('You already have a vault.');
   if(!validName(c.name))throw Error('Use 2 to 32 lowercase letters, digits or single dashes for the vault name. It cannot end in -agent.');
   const token=c.currency==='USDC'?usdc:null;if(c.currency==='USDC'&&!(usdc&&factoryTokens))throw Error('USDC vaults are not available on this PayGate yet.');
-  const dec=token?6:24,limits={auto_limit:amount(c.auto,'limits',dec),max_payment:amount(c.max,'limits',dec),daily_limit:amount(c.daily,'limits',dec)};
-  if(!(c.auto<=c.max&&c.max<=c.daily))throw Error('Limits must satisfy automatic ≤ maximum payment ≤ daily.');
+  const dec=token?6:24,limits=spendingLimits(c,dec);
   if(typeof c.fund!=='number'||!(c.fund>=minDeposit)||c.fund>1e6)throw Error(`Fund the vault with at least ${minDeposit} NEAR: ${agentFund??0.3} pays for the agent account, the rest for the vault's code and storage.`);
   const payees=[...new Set((Array.isArray(c.payees)?c.payees:[]).map(p=>String(p).trim().toLowerCase()).filter(Boolean))];
   if(payees.length>20)throw Error('Add at most 20 payees now. You can add more later.');
@@ -338,7 +394,7 @@ const TOOLS=[
  {name:'get_job',description:'Get one job, its delivery, and its payment or receipt.',inputSchema:{type:'object',properties:{id:{type:'string'}},required:['id']}},
  {name:'create_job',description:'Create a job for an allowlisted payee with a budget in the vault currency, NEAR or USDC (at most 4 decimals). The budget must fit the per-payment limit and the balance not committed to other open jobs.',inputSchema:{type:'object',properties:{title:{type:'string',maxLength:100},brief:{type:'string',maxLength:2000},payee:{type:'string',description:'A payee from list_payees: a NEAR account, or chain:address for a cross-chain payee'},amount:{type:'number',minimum:0.0001}},required:['title','brief','payee','amount']}},
  {name:'deliver_job',description:'Record what was delivered for a job in progress (a summary, a link, an invoice number). The job then waits for payment review.',inputSchema:{type:'object',properties:{id:{type:'string'},text:{type:'string',maxLength:8000}},required:['id','text']}},
- {name:'request_payment',description:'Ask the vault to pay a delivered job. At or below the automatic limit it is paid at once and returns a receipt with the NEAR transaction. Payees on other chains always wait for the owner. Above it, the vault holds the payment and the owner approves or rejects it in their wallet; check back with get_job.',inputSchema:{type:'object',properties:{id:{type:'string'}},required:['id']}},
+ {name:'request_payment',description:'Ask the vault to pay a delivered job. At or below the automatic limit it returns a receipt once paid. Larger payments and cross-chain payments wait for the owner. Repeating the request for a paid job or one awaiting approval returns its current status. If a request is still in progress, use get_job to check its status.',inputSchema:{type:'object',properties:{id:{type:'string'}},required:['id']}},
  {name:'cancel_job',description:'Cancel a job that is in progress or in review and release its budget.',inputSchema:{type:'object',properties:{id:{type:'string'}},required:['id']}}
 ];
 async function agentApi(url,req,res,json,body,ip){
@@ -402,6 +458,14 @@ if(path.startsWith('/api/')){
  const account=await signedIn(req);if(!account)return json(401,{error:'Sign in first.'});
  if(path==='/api/state'&&req.method==='GET')return json(200,await snapshot(account));
  if(path==='/api/verify'&&req.method==='GET'){const w=(await store.get(account))?.workspace;return json(200,{valid:verify(w?.receipts||[]),count:w?.receipts.length||0})}
+ if(path==='/api/verify-payment'&&req.method==='GET'){
+  if(limited('verify-payment '+account,12,6e4))return json(429,{error:'Too many payment checks. Try again in a minute.'});
+  const r=await store.get(account),w=r?.workspace,receipt=w?.receipts.find(item=>item.id===url.searchParams.get('receipt'));
+  if(!receipt)return json(404,{error:'Receipt not found.'});
+  const [name,...parent]=String(receipt.settlement?.vault||'').split('.');
+  const agent=r.profile.vault?.vault===receipt.settlement?.vault?r.profile.vault?.agent:parent.length?`${name}-agent.${parent.join('.')}`:null;
+  return json(200,await verifyPaymentReceipt(provider,{receipt,jobId:`${w.workspace}:${receipt.jobId}`,owner:account,network,agent,relayer:relayer?.accountId}));
+ }
  if(path==='/api/integrations'&&req.method==='GET'){const r=await store.get(account),v=r?.profile?.vault;return json(200,[{name:'NEAR spending vault',state:v?'live':'off',detail:v?`${v.vault} on ${network}`:'Create your vault to start paying'},{name:'Gas relayer (NEP-366)',state:relayer?'live':'off',detail:relayer?`${relayer.accountId} pays your agent's gas, so its allowance never runs out`:'Not enabled on this server. Your agent pays its own gas from a 0.25 NEAR allowance'},...integrations(Boolean(r?.profile?.aiKey))])}
  if(path==='/api/vault'&&req.method==='GET'){const r=await store.get(account),v=vaultFor(account,r?.profile||{});if(!v)return json(200,{configured:false});try{return json(200,await vaultView(v))}catch(e){return json(502,{error:'Cannot reach the NEAR node: '+reason(e)})}}
  if(path==='/api/attestation'&&req.method==='GET'){if(limited('attestation '+account,10,6e4))return json(429,{error:'Too many report checks. Try again in a minute.'});try{return json(200,await attestation())}catch(e){return json(502,{error:e.message})}}

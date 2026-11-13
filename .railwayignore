@@ -1,0 +1,17 @@
+# Keep the upload to what the Dockerfile copies
+.git
+.env
+.env.*
+data
+node_modules
+**/node_modules
+target
+**/target
+test-results
+playwright-report
+video
+docs
+test
+scripts
+contract/*
+!contract/res

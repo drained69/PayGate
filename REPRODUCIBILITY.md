@@ -38,6 +38,10 @@ Requires Node.js 22.22.2 or later. Run `npm install`, then `npm run dev:chain`, 
 
 ## Verification
 
+Use [JUDGES.md](JUDGES.md) to locate the implementation and runnable check for each core claim. `npm run check:judge` runs the app tests and attack demo without rewriting the saved demo log.
+
+New receipts carry `hashVersion: 2`. SHA-256 covers the JSON body without the `hash` property, using recursively sorted object keys and preserving array order. This keeps new hashes stable after a Postgres JSONB round trip or JSON export. Legacy receipts retain their original order-dependent hashes and are still checked using their original algorithm. If an old store already reordered a legacy receipt, the hash check can fail. Use its NEAR transaction to verify the payment itself.
+
 | Command | Covers |
 | --- | --- |
 | `npm test` | Domain, NEAR services, encryption, NEP-413, server security and the file store, offline |

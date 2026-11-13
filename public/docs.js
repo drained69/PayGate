@@ -133,7 +133,7 @@ curl -X POST $BASE/jobs/PG-1a2b3c4d/pay -H "Authorization: Bearer $KEY"</code></
 <tr><td><b>Daily</b></td><td>The total of all payments in a 24-hour window, approved ones included.</td></tr>
 </tbody></table>
 <p>The vault requires automatic ≤ maximum ≤ daily. Lowering a limit also applies to payments already held.</p>
-<h2>Choosing values</h2><p>Set the automatic limit to what you could afford to lose in a day if PayGate or the agent key were compromised: that is the most the agent can send without you. Keep the daily limit close to your real spending.</p>
+<h2>Choosing values</h2><p>Set the automatic limit to zero to require your wallet for every payment. With a positive automatic limit, the agent can make multiple payments up to that amount, until it reaches the daily limit. Keep the daily limit close to your real spending.</p>
 <h2>Freeze</h2><p>Freezing stops every new request and every approval at once, including held payments. Withdrawals still work while frozen.</p>
 <h2>Windows</h2><p>The daily limit uses fixed 24-hour windows. Spending at the end of one window and the start of the next can reach twice the daily limit in a short time.</p>`},
 {id:'payees',title:'Payees',html:`

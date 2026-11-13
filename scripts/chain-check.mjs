@@ -1,8 +1,12 @@
 import {chromium} from 'playwright';
 import assert from 'node:assert/strict';
-import {mkdir} from 'node:fs/promises';
+import {mkdir,readFile} from 'node:fs/promises';
+import {pathToFileURL} from 'node:url';
 import {JsonRpcProvider,KeyPair,decodeTransaction} from 'near-api-js';
-import {toYocto,signNep413,accountFor} from '../src/chain.mjs';
+import {toYocto,signNep413,accountFor,vaultClient,provision} from '../src/chain.mjs';
+import {LIMITS} from './sandbox.mjs';
+import {openStore} from '../src/store.mjs';
+import {sealer} from '../src/secrets.mjs';
 import {startChainApp} from './dev-chain.mjs';
 import {startStub} from './near-stub.mjs';
 import http from 'node:http';
@@ -65,6 +69,8 @@ try{
  await create('Small job',0.05);await page.locator('#job-dialog').waitFor({state:'hidden'});
  await row('Small job').getByRole('button',{name:'Run agent'}).click();await row('Small job').getByRole('button',{name:'Review & pay'}).click();
  await page.getByText('Written on NEAR AI Cloud · stub/model').waitFor();await page.getByText('≈ $3.83').waitFor();
+ assert.equal(await page.locator('#review-dialog .payment-address').textContent(),payee);
+ await page.getByRole('region',{name:'Vault policy preview'}).getByText('Frozen · unfreeze in Controls',{exact:false}).waitFor();
  await page.getByRole('button',{name:'Pay 0.05 NEAR'}).click();await page.locator('#review-error').getByText('The vault is frozen').waitFor();await page.getByRole('button',{name:'Close review'}).click();
  await nav('Controls');await viaWallet(page,()=>page.getByRole('button',{name:'Unfreeze in wallet'}).click());await page.getByText('Vault status: Active').waitFor();
  const start=await balance(payee);
@@ -76,8 +82,13 @@ try{
  await create('Large job',0.3);await page.locator('#job-dialog').waitFor({state:'hidden'});
  await row('Large job').getByRole('button',{name:'Record delivery'}).click();await page.getByLabel('Delivery').fill('Report: https://example.com/report.pdf');await page.getByRole('button',{name:'Save delivery'}).click();await toast('Delivery recorded');
  await row('Large job').getByRole('button',{name:'Review & pay'}).click();await page.locator('#review-dialog').getByText('Recorded by owner').waitFor();await page.getByRole('button',{name:'Request payment'}).click();
+ await page.getByRole('region',{name:'Vault policy preview'}).getByText(/Payment #\d+ is in the vault/).waitFor();
  await viaWallet(page,()=>page.getByRole('button',{name:'Approve in wallet'}).click());await toast('Payment approved and sent.');
  assert.equal(await balance(payee)-start,BigInt(toYocto(0.35)));
+ const approved=await (await page.request.get(url+'/api/state')).json();
+ const approval=approved.workspace.receipts.find(r=>r.job==='Large job');
+ const replays=await Promise.all([1,2].map(()=>post(page,{action:'confirm',id:approval.jobId,txHash:approval.settlement.txHash})));
+ for(const replay of replays)assert.equal(replay.workspace.receipts.filter(r=>r.jobId===approval.jobId).length,1);
  const waitFor=async test=>{for(let i=0;i<40&&!test();i++)await new Promise(d=>setTimeout(d,250));assert.ok(test())};
  await waitFor(()=>hooks.some(h=>h.headers['x-paygate-event']==='payment.held'&&verified(h)&&JSON.parse(h.body).data.jobId));
  await waitFor(()=>hooks.some(h=>h.headers['x-paygate-event']==='payment.paid'));
@@ -88,6 +99,13 @@ try{
  await nav('Evidence');await page.getByText('Paid automatically').first().waitFor();await page.getByText('Paid with owner approval').first().waitFor();await page.getByRole('button',{name:'Verify receipt chain'}).click();await page.getByText('All 2 receipt hashes and links match.').waitFor();
  const s=await (await page.request.get(url+'/api/state')).json();
  for(const r of s.workspace.receipts){const tx=await provider.viewTransactionStatus({txHash:r.settlement.txHash,accountId:r.settlement.route==='auto'?agent:alice,waitUntil:'EXECUTED_OPTIMISTIC'});assert.ok(tx.status.SuccessValue!==undefined)}
+ for(const title of ['Small job','Large job']){
+  await row(title).getByRole('button',{name:'Verify payment'}).click();
+  const proof=page.getByRole('dialog').filter({has:page.getByRole('heading',{name:'Verify payment'})});
+  await proof.getByRole('status').getByText('NEAR payment verified.',{exact:true}).waitFor();
+  await proof.getByText(payee,{exact:true}).waitFor();
+  await proof.getByRole('button',{name:'Close payment verification'}).click();
+ }
  // A transaction hash proves nothing unless the chain shows this owner approving this exact payment.
  const rejected=s.workspace.jobs.find(j=>j.title==='Rejected job').id;assert.equal((await post(page,{action:'pay',id:rejected})).workspace.jobs.find(j=>j.id===rejected).status,'Awaiting approval');
  assert.match((await post(page,{action:'confirm',id:rejected,txHash:s.workspace.receipts[0].settlement.txHash})).error,/not the expected action/);
@@ -95,6 +113,12 @@ try{
  await nav('Controls');await page.getByLabel('Paid automatically up to').fill('0.6');await page.getByRole('button',{name:'Update limits in wallet'}).click();await page.locator('#limits-error').getByText('Limits must satisfy').waitFor();
  await page.getByLabel('Paid automatically up to').fill('0.2');await page.getByLabel('Maximum per payment').fill('0.4');await viaWallet(page,()=>page.getByRole('button',{name:'Update limits in wallet'}).click());await toast('Wallet transaction confirmed');
  assert.deepEqual((await (await page.request.get(url+'/api/vault')).json()).limits,{auto:0.2,max:0.4,daily:1});
+ // Existing vault owners can switch to wallet approval for every payment.
+ await page.getByRole('button',{name:'Set automatic limit to 0'}).click();
+ await viaWallet(page,()=>page.getByRole('button',{name:'Update limits in wallet'}).click());await toast('Wallet transaction confirmed');
+ assert.equal((await (await page.request.get(url+'/api/vault')).json()).limits.auto,0);
+ await page.getByLabel('Paid automatically up to').fill('0.2');
+ await viaWallet(page,()=>page.getByRole('button',{name:'Update limits in wallet'}).click());await toast('Wallet transaction confirmed');
  await page.getByLabel('NEAR account').fill(bob);await viaWallet(page,()=>page.getByRole('button',{name:'Add in wallet'}).click());await page.locator(`form[data-account="${bob}"]`).waitFor();
  await viaWallet(page,()=>page.locator(`[data-account="${bob}"][data-action="remove-payee"]`).click());await toast('Wallet transaction confirmed');assert.equal(await page.locator(`form[data-account="${bob}"]`).count(),0);
  await nav('Treasury');await page.getByRole('heading',{name:'Waiting on-chain for your approval'}).waitFor();
@@ -109,13 +133,21 @@ try{
  const made=await agentReq('POST','/api/v1/jobs',{title:'Agent job',brief:'Made over REST',payee,amount:0.05});assert.equal(made.status,201);
  await agentReq('POST',`/api/v1/jobs/${made.body.id}/deliver`,{text:'Delivered by the agent'});
  const paidApi=(await agentReq('POST',`/api/v1/jobs/${made.body.id}/pay`)).body;assert.equal(paidApi.status,'Paid');assert.equal(paidApi.receipt.route,'auto');
+ const retryApi=await agentReq('POST',`/api/v1/jobs/${made.body.id}/pay`);
+ assert.equal(retryApi.status,200);
+ assert.deepEqual(retryApi.body.receipt,paidApi.receipt);
  assert.equal(await balance(payee)-viaApi,BigInt(toYocto(0.05)));
  const mcp=async(method,params,key=apiKey)=>(await agentReq('POST','/mcp',{jsonrpc:'2.0',id:1,method,params},key)).body;
  assert.equal((await mcp('initialize',{protocolVersion:'2025-06-18',capabilities:{},clientInfo:{name:'test',version:'1'}})).result.serverInfo.name,'paygate');
  assert.ok((await mcp('tools/list',{})).result.tools.some(t=>t.name==='request_payment'));
  const call=async(name,args,key)=>JSON.parse((await mcp('tools/call',{name,arguments:args},key)).result.content[0].text);
  const big=await call('create_job',{title:'Agent large job',brief:'Over MCP',payee,amount:0.3});await call('deliver_job',{id:big.id,text:'Done'});
- assert.equal((await call('request_payment',{id:big.id})).status,'Awaiting approval','larger payments still wait for the owner');
+ const waitingApi=await call('request_payment',{id:big.id});
+ assert.equal(waitingApi.status,'Awaiting approval','larger payments still wait for the owner');
+ const retryMcp=await call('request_payment',{id:big.id});
+ assert.deepEqual(retryMcp,waitingApi,'repeating a held request returns the original payment');
+ const pendingApi=(await (await page.request.get(url+'/api/vault')).json()).pending;
+ assert.equal(pendingApi.filter(p=>p.job_id.endsWith(':'+big.id)).length,1);
  assert.equal((await mcp('tools/call',{name:'create_job',arguments:{title:'x',brief:'y',payee:'attacker.near',amount:0.01}})).result.isError,true);
  assert.equal((await agentReq('POST','/api/v1/vault/freeze',{})).status,404,'agents have no owner actions');
  // A key without payment rights cannot request payment.
@@ -130,6 +162,7 @@ try{
  // A second customer sees nothing of the first and cannot claim their vault or name.
  const other=await open();await other.goto(url);await viaWallet(other,()=>other.locator('#signin').click(),bob);await other.getByRole('heading',{name:'Create your vault.'}).waitFor();
  const theirs=await (await other.request.get(url+'/api/state')).json();assert.equal(theirs.account,bob);assert.equal(theirs.vault,null);assert.equal(theirs.workspace.jobs.length,0);
+ assert.equal((await other.request.get(url+'/api/verify-payment?receipt='+approval.id)).status(),404);
  assert.match((await post(other,{action:'pay',id:rejected})).error,/Create your vault first/);
  assert.match((await post(other,{action:'vault-create',name:'cheap',fund:1.5,auto:0.1,max:0.5,daily:1,payees:[]})).error,/at least 2\.02 NEAR/,'the minimum comes from the factory');
  const cfg=await (await other.request.get(url+'/api/config')).json();assert.deepEqual([cfg.minDeposit,cfg.agentFund],[2.02,0.02],'with a relayer, agents get only storage money');
@@ -138,10 +171,24 @@ try{
  assert.match((await post(other,{action:'vault-create',name:'acme',fund:3,auto:0.1,max:0.5,daily:1,payees:[]})).error,/taken/);
  assert.match((await post(other,{action:'vault-confirm',txHash:s.workspace.receipts[0].settlement.txHash})).error,/Start creating a vault first/);
  // A wallet that signs but never reports back: PayGate finds the new vault on-chain without a hash.
- const link=(await post(other,{action:'vault-create',name:'bobco',fund:3,auto:0.1,max:0.5,daily:1,payees:[payee]})).url,tx=decodeTransaction(Buffer.from(new URL(link,url).searchParams.get('transactions'),'base64'));
- await accountFor(app.rpcUrl,bob,customers[bob]).signAndSendTransaction({receiverId:tx.receiverId,actions:tx.actions});
+ const link=(await post(other,{action:'vault-create',name:'bobco',fund:3,auto:0,max:0.5,daily:1,payees:[payee]})).url,tx=decodeTransaction(Buffer.from(new URL(link,url).searchParams.get('transactions'),'base64'));
+ const bobSigner=accountFor(app.rpcUrl,bob,customers[bob]);
+ await bobSigner.signAndSendTransaction({receiverId:tx.receiverId,actions:tx.actions});
  assert.equal((await post(other,{action:'vault-confirm'})).vault.vault,`bobco.${factory}`);
  assert.ok(Number(await provider.callFunction({contractId:`bobco.${factory}`,method:'get_policy',args:{},blockQuery:{finality:'optimistic'}}).then(p=>BigInt(p.balance)))>0.69e24,'the rest of the deposit reaches the vault');
+ // No NEAR AI key is needed. A payment below the usual automatic threshold stays held until the owner signs.
+ const bobState=await post(other,{action:'create',title:'Owner approval only',brief:'Pay a manually delivered job',payee,amount:0.01});
+ assert.equal(bobState.aiKey,false);
+ const bobJob=bobState.workspace.jobs[0];
+ await post(other,{action:'deliver',id:bobJob.id,text:'Delivered'});
+ const beforeManual=await balance(payee);
+ const bobHeld=await post(other,{action:'pay',id:bobJob.id});
+ assert.equal(bobHeld.workspace.jobs[0].status,'Awaiting approval');
+ assert.equal(await balance(payee),beforeManual);
+ const bobPayment=bobHeld.workspace.jobs[0].payment;
+ const approvedManual=await bobSigner.callFunctionRaw({contractId:bobPayment.vault,methodName:'approve_payment',args:{id:bobPayment.paymentId},deposit:1n,gas:60000000000000n});
+ assert.equal((await post(other,{action:'confirm',id:bobJob.id,txHash:approvedManual.transaction.hash})).workspace.jobs[0].status,'Paid');
+ assert.equal(await balance(payee)-beforeManual,BigInt(toYocto(0.01)));
  // Closing deletes the vault and returns all of its NEAR, including the storage its code locked.
  const beforeClose=await balance(bob),closeLink=(await post(other,{action:'owner',kind:'close'})).url,closeTx=decodeTransaction(Buffer.from(new URL(closeLink,url).searchParams.get('transactions'),'base64'));
  const closed=await accountFor(app.rpcUrl,bob,customers[bob]).signAndSendTransaction({receiverId:closeTx.receiverId,actions:closeTx.actions});
@@ -183,6 +230,9 @@ try{
  assert.ok(!(await provider.callFunction({contractId:cvault,method:'get_recipients',args:{},blockQuery:{finality:'optimistic'}})).includes(deposit),'deposit addresses never join the allowlist');
  assert.equal(stub.seen.submitted.at(-1).depositAddress,deposit);
  await cp.locator('nav [data-page="Evidence"]').click();await cp.getByText('Sent to Base via NEAR Intents').waitFor();await cp.getByRole('button',{name:'Check delivery'}).click();await cp.locator('.bridge-status').getByText('Delivered').waitFor();
+ await cp.getByRole('row').filter({hasText:'Bridge job'}).getByRole('button',{name:'Verify payment'}).click();
+ await cp.getByRole('status').getByText('NEAR deposit verified.',{exact:true}).waitFor();
+ await cp.getByRole('button',{name:'Close payment verification'}).click();
  const carolBefore=await usdcBal(carol);await cp.locator('nav [data-page="Treasury"]').click();await cp.getByLabel('Amount (USDC)').fill('10');await viaWallet(cp,()=>cp.getByRole('button',{name:'Withdraw in wallet'}).click());
  await ctoast('Wallet transaction confirmed');assert.equal(await usdcBal(carol)-carolBefore,10_000_000n);
  // A USDC vault's spare NEAR goes back to the owner only, and never below its storage.
@@ -190,6 +240,72 @@ try{
  await cp.getByLabel('Withdraw spare NEAR').fill('0.05');await viaWallet(cp,()=>cp.getByRole('button',{name:'Withdraw NEAR in wallet'}).click());await ctoast('Wallet transaction confirmed');
  assert.ok(await balance(carol)-nearBefore>toYocto(0.049),'spare NEAR reached the owner');
  const tooMuch=await (await cp.request.post(url+'/api/action',{headers:{'X-PayGate':'1'},data:{action:'owner',kind:'withdraw-near',amount:5}})).json();assert.ok(tooMuch.transaction||tooMuch.url,'the vault, not the server, refuses an over-withdrawal');
+ // Approving an unregistered USDC payee succeeds as a wallet call but the token transfer fails.
+ const carolSigner=accountFor(app.rpcUrl,carol,customers[carol]);
+ await carolSigner.callFunctionRaw({contractId:cvault,methodName:'set_recipient',args:{recipient:bob,allowed:true},deposit:1n});
+ const budgetBeforeFailure=await usdcBal(cvault);
+ const created=await post(cp,{action:'create',title:'USDC retry',brief:'Retry a failed transfer',payee:bob,amount:11});
+ const retryId=created.workspace.jobs.find(j=>j.title==='USDC retry').id;
+ await post(cp,{action:'deliver',id:retryId,text:'Delivered'});
+ const held=await post(cp,{action:'pay',id:retryId});
+ assert.equal(held.workspace.jobs.find(j=>j.id===retryId).status,'Awaiting approval');
+ await cp.reload();await cp.locator('nav [data-page="Jobs"]').click();
+ const retryRow=cp.getByRole('row').filter({hasText:'USDC retry'});
+ await retryRow.getByRole('button',{name:'Review approval'}).click();
+ await viaWallet(cp,()=>cp.locator('#review-dialog').getByRole('button',{name:'Approve in wallet'}).click());
+ await ctoast('Transfer failed. The job is back in review.');
+ const failed=await (await cp.request.get(url+'/api/state')).json();
+ const attempt=failed.workspace.jobs.find(j=>j.id===retryId).lastPaymentAttempt;
+ assert.equal(attempt.result,'failed');
+ assert.equal(failed.workspace.receipts.some(r=>r.jobId===retryId),false);
+ assert.equal(await usdcBal(cvault),budgetBeforeFailure);
+ const recovered=await post(cp,{action:'confirm',id:retryId,txHash:attempt.txHash});
+ assert.equal(recovered.workspace.jobs.find(j=>j.id===retryId).status,'Review');
+ // Once the recipient can accept USDC, the same job can be requested and approved.
+ await carolSigner.callFunctionRaw({contractId:usdc,methodName:'storage_deposit',args:{account_id:bob,registration_only:true},deposit:1250000000000000000000n});
+ await retryRow.getByRole('button',{name:'Review & pay'}).click();
+ await cp.getByText('The last transfer failed and the vault restored its payment accounting.',{exact:false}).waitFor();
+ await cp.getByRole('button',{name:'Request payment'}).click();
+ await viaWallet(cp,()=>cp.locator('#review-dialog').getByRole('button',{name:'Approve in wallet'}).click());
+ await ctoast('Payment approved and sent.');
+ assert.equal(await usdcBal(bob),11_000_000n);
+ assert.equal(await usdcBal(cvault),budgetBeforeFailure-11_000_000n);
+ // Broadcast outside the app to simulate NEAR completing a payment before its receipt was saved.
+ const localStore=await openStore({dir:pathToFileURL(app.dataDir+'/')});
+ const saved=await localStore.get(`sandbox/${carol}`);
+ const box=sealer(await readFile(new URL('secret.key',pathToFileURL(app.dataDir+'/')),'utf8'));
+ const recoveryConfig={rpcUrl:app.rpcUrl,network:'sandbox',vault:cvault,owner:carol,
+  agent:saved.profile.vault.agent,token:usdc,agentKey:box.open(saved.profile.vault.agentKey)};
+ const unrelatedHash=saved.workspace.receipts.find(r=>r.job==='USDC job').settlement.txHash;
+ const recoveryTitle='Recover relayed payment';
+ const recoveryState=await post(cp,{action:'create',title:recoveryTitle,brief:'Verify payment recovery',payee,amount:5});
+ const recoveryJob=recoveryState.workspace.jobs.find(j=>j.title===recoveryTitle);
+ await post(cp,{action:'deliver',id:recoveryJob.id,text:'Delivered'});
+ const payeeBefore=await usdcBal(payee);
+ const sent=await vaultClient({...recoveryConfig,relayer:app.relayer}).request(recoveryJob,`${recoveryState.workspace.workspace}:${recoveryJob.id}`);
+ assert.equal(sent.status,'sent');
+ assert.equal(await usdcBal(payee),payeeBefore+5_000_000n);
+ assert.match((await post(cp,{action:'confirm',id:recoveryJob.id,txHash:unrelatedHash})).error,/different job or payment/);
+ await cp.reload();await cp.locator('nav [data-page="Jobs"]').click();
+ await cp.getByRole('row').filter({hasText:recoveryTitle}).getByRole('button',{name:'Review & pay'}).click();
+ await cp.getByText('Record an existing payment',{exact:true}).click();
+ await cp.getByLabel('Transaction hash').fill(sent.txHash);
+ await cp.locator('#hash-form').getByRole('button',{name:'Record',exact:true}).click();
+ await ctoast('Existing payment recorded.');
+ const replay=await post(cp,{action:'confirm',id:recoveryJob.id,txHash:sent.txHash});
+ assert.equal(replay.workspace.jobs.find(j=>j.id===recoveryJob.id).status,'Paid');
+ const receipts=replay.workspace.receipts.filter(r=>r.jobId===recoveryJob.id);
+ assert.equal(receipts.length,1);
+ assert.equal(receipts[0].settlement.txHash,sent.txHash);
+ assert.equal(await usdcBal(payee),payeeBefore+5_000_000n,'recording never sends funds again');
+ // A direct payer needs its own gas allowance. The relayer-funded product vaults only reserve storage.
+ const funded=await provision({rpcUrl:app.rpcUrl,owner:app.operator,limits:LIMITS,payees:[payee]});
+ const direct=vaultClient({...funded,network:'sandbox'}),directJob={payee,amount:0.05};
+ const directPayment=await direct.request(directJob,'direct-recovery');
+ assert.equal(directPayment.status,'sent');
+ assert.deepEqual(await direct.confirmAutomatic(directPayment.txHash,directJob,'direct-recovery'),{
+  paymentId:directPayment.paymentId,amountUnits:toYocto(0.05),txSigner:funded.agent
+ });
  // Forged sign-ins: someone else's signature for an account, and a nonce used twice.
  const ch=await (await other.request.post(url+'/api/auth/challenge',{headers:{'X-PayGate':'1'},data:{}})).json(),payload={message:ch.message,nonce:Buffer.from(ch.nonce,'base64'),recipient:ch.recipient,callbackUrl:ch.callbackUrl};
  const bobKey=customers[bob],forged={accountId:alice,publicKey:KeyPair.fromString(bobKey).getPublicKey().toString(),signature:signNep413(bobKey,payload),nonce:ch.nonce};

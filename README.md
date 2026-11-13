@@ -11,9 +11,9 @@
 
 Non-custodial spending vaults for AI agents on NEAR. The spending rules live in a smart contract the customer owns, so a hijacked agent cannot break them.
 
-[**Live app (testnet)**](https://trypaygate.xyz) · [Judge quickstart](#judge-quickstart) · [How it works](#how-it-works) · [NEAR technology](#near-technology-used) · [Architecture](#architecture) · [Quick start](#quick-start) · [Security](#security-model) · [Contracts](#contract-reference)
+[**Live app (testnet)**](https://trypaygate.xyz) · [Judge guide](JUDGES.md) · [Judge quickstart](#judge-quickstart) · [How it works](#how-it-works) · [NEAR technology](#near-technology-used) · [Architecture](#architecture) · [Quick start](#quick-start) · [Security](#security-model) · [Contracts](#contract-reference)
 
-![Node.js 22.22+](https://img.shields.io/badge/node-%E2%89%A522.22-1b3158) ![NEAR](https://img.shields.io/badge/chain-NEAR-1b3158) ![near-sdk 5.30](https://img.shields.io/badge/near--sdk-5.30-1b3158) ![Contract tests](https://img.shields.io/badge/contract%20tests-53%20passing-2f7d55) ![App tests](https://img.shields.io/badge/app%20tests-28%20passing-2f7d55) ![License: MIT](https://img.shields.io/badge/license-MIT-1b3158)
+![Node.js 22.22+](https://img.shields.io/badge/node-%E2%89%A522.22-1b3158) ![NEAR](https://img.shields.io/badge/chain-NEAR-1b3158) ![near-sdk 5.30](https://img.shields.io/badge/near--sdk-5.30-1b3158) ![Contract tests](https://img.shields.io/badge/contract%20tests-53%20passing-2f7d55) ![App tests](https://img.shields.io/badge/app%20tests-29%20passing-2f7d55) ![License: MIT](https://img.shields.io/badge/license-MIT-1b3158)
 
 ![PayGate homepage](docs/images/home.jpg)
 
@@ -32,36 +32,38 @@ Non-custodial spending vaults for AI agents on NEAR. The spending rules live in 
 ## Contents
 
 1. [Judge quickstart](#judge-quickstart)
-1. [The problem](#the-problem)
-2. [How it works](#how-it-works)
-3. [NEAR technology used](#near-technology-used)
-4. [Features](#features)
-5. [Deployments](#deployments)
-6. [Architecture](#architecture)
-7. [Quick start](#quick-start)
-8. [Using PayGate](#using-paygate)
-9. [Agent API and MCP](#agent-api-and-mcp)
-10. [Costs](#costs)
-11. [Self-hosting](#self-hosting)
-12. [Configuration](#configuration)
-13. [Security model](#security-model)
-14. [Contract reference](#contract-reference)
-15. [HTTP API](#http-api)
-16. [Testing](#testing)
-17. [Project structure](#project-structure)
-18. [Roadmap](#roadmap)
-19. [Limitations](#limitations)
-20. [Hackathon submission](#hackathon-submission)
+2. [The problem](#the-problem)
+3. [How it works](#how-it-works)
+4. [NEAR technology used](#near-technology-used)
+5. [Features](#features)
+6. [Deployments](#deployments)
+7. [Architecture](#architecture)
+8. [Quick start](#quick-start)
+9. [Using PayGate](#using-paygate)
+10. [Agent API and MCP](#agent-api-and-mcp)
+11. [Costs](#costs)
+12. [Self-hosting](#self-hosting)
+13. [Configuration](#configuration)
+14. [Security model](#security-model)
+15. [Contract reference](#contract-reference)
+16. [HTTP API](#http-api)
+17. [Testing](#testing)
+18. [Project structure](#project-structure)
+19. [Roadmap](#roadmap)
+20. [Limitations](#limitations)
+21. [Hackathon submission](#hackathon-submission)
+22. [Troubleshooting](#troubleshooting)
+23. [License](#license)
 
 ---
 
 ## Judge quickstart
 
-Each step says what to do and what you should see. A to C need only Node.js 22.22.2 or later; nothing uses real funds.
+Start with [JUDGES.md](JUDGES.md) for a claim-to-code map. Run `npm ci` and `npm run check:judge` to run the app tests and the on-chain attack demo with the committed contract WASM. The first sandbox run downloads the NEAR node binary. No NEAR AI key or real funds are required. Rust and Chromium are needed only for the respective extended checks below.
 
 **A. Watch a hijacked agent fail to steal (about 2 minutes)**
 
-1. Run `git clone https://github.com/drained69/PayGate.git && cd PayGate && npm install`.
+1. Run `git clone https://github.com/drained69/PayGate.git && cd PayGate && npm ci`.
 2. Run `npm run demo:attack`. You see 12 `BLOCKED` lines, each naming the rule that stopped it, and then `Result: the attacker received 0 NEAR`. Every step is a real transaction on a local NEAR node. A saved run is in [docs/attack-demo-log.txt](docs/attack-demo-log.txt).
 
 **B. Use the whole product on a local NEAR node (about 5 minutes)**
@@ -77,7 +79,7 @@ Each step says what to do and what you should see. A to C need only Node.js 22.2
 
 | Run | You see |
 | --- | --- |
-| `npm test` | `pass 28`, `fail 0` |
+| `npm test` | `fail 0` |
 | `cd contract && cargo test` (Rust 1.97.1) | `41 passed` |
 | `cd contract/factory && cargo test` | `12 passed` |
 | `npx playwright install chromium`, then `npm run test:chain` | `Chain checks passed: …`. It covers the product end to end on a local node, including USDC vaults, a cross-chain payout through a stand-in 1Click, closing a vault, retiring the factory, and the Agent API over REST and MCP |
@@ -136,6 +138,8 @@ sequenceDiagram
 
 Every item below is used in the shipped code.
 
+**Why these NEAR primitives matter:** A function-call access key lets the agent sign its own requests without giving it a general-purpose wallet. The owner controls the allowlist and limits in the vault contract, so a compromised server cannot quietly relax them. NEAR's named sub-accounts let one factory create a distinct vault and restricted agent account for each customer in a single wallet-approved setup flow. NEP-366 can move gas payment to a relayer without changing which key is authorized to request payment. These are separate controls: the access key limits *what the agent can call*, while the vault limits *who can be paid and how much*.
+
 ### Protocol and standards
 
 | Technology | How PayGate uses it | Where |
@@ -183,7 +187,7 @@ Every item below is used in the shipped code.
 | **Gas relayer** | Optional NEP-366 relayer: agents never run out of gas, and customer deposits are 0.28 NEAR smaller |
 | **Evidence** | Receipts with transaction links, SHA-256 hash-chain verification, JSON export and an attestation check |
 | **Close and recover** | Owners can close an idle vault and get all of its NEAR back, including its storage |
-| **Privacy** | Customers can delete their data at any time. Keys never reach the browser |
+| **Privacy** | Customers can delete their stored data. Agent private keys are generated on the server; saved agent and NEAR AI keys are never returned to the browser |
 
 <table>
 <tr>
@@ -280,6 +284,18 @@ sequenceDiagram
 
 The factory deploys its stored vault code into `name.factory`, initializes it with the customer as owner, and creates `name-agent.factory` with a single function-call key. If any step fails, the deposit is refunded.
 
+### Sources of truth and recovery
+
+| State | Source of truth | What happens if the PayGate server is unavailable |
+| --- | --- | --- |
+| Vault balance, limits, payees, freeze state and held payments | Customer's NEAR vault contract | The funds and rules remain on-chain. The owner can use a compatible NEAR wallet or CLI to call the contract. |
+| Owner authority | Customer's own NEAR account and full-access key | PayGate cannot impersonate the owner or approve a held payment. The owner must retain access to their wallet. |
+| Agent authority | Restricted function-call key on its agent account | A lost or exhausted agent key can be replaced by an owner-signed `set_agent`; the server's saved copy cannot change owner controls. |
+| Jobs, labels, deliveries and receipt chain | PayGate workspace store: Postgres when configured, otherwise local files | They need a database or file backup. On-chain payments remain visible, but off-chain job descriptions and receipt history may be lost without one. |
+| NEAR AI key and saved agent key | Encrypted in the workspace under `PAYGATE_SECRET` | Back up the secret separately from the database. Losing it makes saved keys unreadable; it does not transfer ownership of the vault. |
+
+Receipts are hash-linked to detect edits against a retained prior hash. They are **not digital signatures or a substitute for NEAR transaction receipts**. The server checks the on-chain transaction before recording a payment as complete; see [REPRODUCIBILITY.md](REPRODUCIBILITY.md) for exact verification boundaries.
+
 ## Quick start
 
 Requires **Node.js 22.22.2 or later**. The first run downloads the NEAR sandbox binary.
@@ -292,6 +308,8 @@ npm run dev:chain
 ```
 
 This runs the whole platform on a local NEAR node, with test customers, a local USDC and a built-in local wallet. Open <http://localhost:3000>, select **Sign in with NEAR** and choose a test account. The local wallet works only on a local node; the server refuses test accounts on testnet and mainnet.
+
+The command starts the local node, deploys the test factory and token, creates test accounts, and starts the server. It prints the factory and test account IDs. Keep that terminal open while using the app. Sandbox accounts and tokens are only for local development; they are separate from hosted testnet and mainnet accounts. To use the hosted app, bring a wallet and testnet NEAR as described in [Judge quickstart D](#judge-quickstart).
 
 Then watch an attack fail:
 
@@ -316,6 +334,10 @@ npm run demo:attack
 
 ## Using PayGate
 
+**NEAR AI Cloud is optional.** Vault creation, manually recorded deliveries, REST and MCP jobs, payments, approvals, and payment verification work without a NEAR AI API key. To enable **Run agent**, save your own key in **Settings → NEAR AI Cloud key**. PayGate stores it encrypted for your account.
+
+**Require owner approval for every payment.** Set the automatic limit to `0` when creating the vault, or update it in **Controls → Spending limits** and sign in your wallet. The vault holds every positive payment request under this policy. Your per-payment and daily ceilings still apply, including when you approve a request.
+
 1. **Sign in** with **Sign in with NEAR** and approve the message in your wallet.
 2. **Create your vault.** Choose a name, NEAR or USDC, payees, limits and funding, then sign one transaction. See [Costs](#costs) for the minimum.
 3. **Optionally add your NEAR AI key** in **Settings** so the agent can do the work, and connect **alerts**.
@@ -325,6 +347,12 @@ npm run demo:attack
 7. **Inspect** receipts and transactions in **Evidence**. **Freeze**, **Withdraw** or **Close** at any time from **Controls** and **Treasury**.
 
 Job statuses: `Working` → `Review` → `Awaiting approval` (only above the automatic limit) → `Paid`. A job can be `Cancelled` from `Working` or `Review`.
+
+If the wallet closes after signing, paste its transaction hash into **Review approval** to recover the result. PayGate matches the vault's payment event to the job, payee and amount, then checks the transfer receipts. Recording the same hash again returns the existing result. If the vault reports that an approved transfer failed and it restored its payment accounting, the job returns to **Review**. Fix the destination, such as registering the payee for USDC in **Controls**, before requesting payment again.
+
+If an automatic payment reached NEAR but the job still shows **Review**, open **Review & pay → Record an existing payment**. Paste the payment transaction hash from the vault's history. PayGate checks the original agent request and its transfer receipts before restoring the paid receipt. This action only reads the chain and records the result in PayGate.
+
+In **Evidence**, select **Verify payment** on a receipt to recheck the finalized NEAR transaction against its vault, job, recipient and amount. For a cross-chain payment, this verifies the NEAR deposit. **Check delivery** looks up the separate destination result from NEAR Intents. **Verify receipt chain** checks the stored receipt hashes and links.
 
 ## Agent API and MCP
 
@@ -354,6 +382,8 @@ curl -X POST https://trypaygate.xyz/api/v1/jobs/PG-1a2b3c4d/pay \
 ```
 
 A payment at or below the automatic limit returns the job as `Paid`, with its transaction. A larger one returns `Awaiting approval` until the owner approves it in their wallet. Agents cannot approve, freeze, change limits or payees, or withdraw, and the vault refuses any payee outside the allowlist on-chain.
+
+If an agent loses the API response, repeat the payment request with the same job ID. A job already marked `Paid` returns its original receipt, and a job in `Awaiting approval` returns its existing request. If the request is still running, REST returns HTTP `409` and MCP reports an in-progress error. Use `get_job` or `GET /api/v1/jobs/{id}` to check what happened.
 
 ## Costs
 
@@ -416,7 +446,9 @@ npm run check:deployed -- https://your-domain
 > [!IMPORTANT]
 > `PAYGATE_SECRET` encrypts every customer's agent key and NEAR AI key. **Back it up.** Without it, stored agent keys cannot be decrypted, and customers would need to name a new agent with `set_agent`.
 
-`PUBLIC_URL` must be the exact address customers use. The server rejects requests for any other host, and wallet sign-in is bound to it. The deployed check browses the site as a visitor and signs nothing.
+`PUBLIC_URL` must be the exact address customers use. The server rejects requests for any other host, and wallet sign-in is bound to it. The deployed check browses the site as a visitor and signs nothing. `GET /healthz` answers without a customer session; `GET /api/config` shows the selected network, factory, minimum deposit and feature availability. Inspect both after deployment, then sign in with a wallet on that same network before opening vault creation to users.
+
+The server selects Postgres only when `DATABASE_URL` is set. Without it, it writes JSON files under `DATA_DIR`. A hosted deployment needs durable storage either way. Postgres is the intended multi-instance store because account updates use row locks; a mounted volume with file storage is suitable only when one server process owns those files. Back up both the database and `PAYGATE_SECRET`, and test restoration before relying on the hosted service.
 
 ### 3. Before opening to the public
 
@@ -424,7 +456,7 @@ Follow [docs/MAINNET.md](docs/MAINNET.md). It covers the pre-mainnet review, the
 
 ## Configuration
 
-Copy [`.env.example`](.env.example) as a starting point. The server reads its configuration from the environment.
+Use [`.env.example`](.env.example) as a list of variables. **The server does not load `.env` automatically.** Set variables in the shell, your process manager or Railway. If you copy the example into a local `.env`, export it into the shell before `npm run dev` or `npm start` (for example, `set -a; . ./.env; set +a` in a trusted local shell). Do not commit the filled file. `npm run dev:chain` supplies its own local sandbox configuration.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
@@ -444,6 +476,17 @@ Copy [`.env.example`](.env.example) as a starting point. The server reads its co
 | `PORT`, `HOST` | `3000`; `127.0.0.1` locally, `0.0.0.0` hosted | Listen address |
 
 Platform deployment only: `NEAR_OPERATOR_ACCOUNT`, `NEAR_OPERATOR_KEY` (prompted if unset), `FACTORY_NAME` (default `paygate`) and `FACTORY_FUND` (default `6`).
+
+### Deployment modes
+
+| Mode | Start command | Chain and wallet | Persistence | Purpose |
+| --- | --- | --- | --- | --- |
+| Local sandbox | `npm run dev:chain` | Local NEAR node and stand-in wallet | Temporary local data | Reproduce the product and run the attack demo without external funds |
+| Local server against testnet | `NEAR_NETWORK=testnet npm run dev` with a deployed testnet factory configured | Real testnet wallet | Files by default, or Postgres | Develop against the public test network |
+| Hosted testnet | `npm start` or the Dockerfile with server variables | Real testnet wallet through NEAR Connect | Durable Postgres recommended | Public rehearsal with test tokens |
+| Mainnet | Dockerfile after [mainnet checklist](docs/MAINNET.md) | Real mainnet wallet | Durable Postgres and a backed-up secret | Future production launch; not currently deployed |
+
+`PUBLIC_URL` or Railway's `RAILWAY_PUBLIC_DOMAIN` enables hosted mode. Hosted mode binds the server on `0.0.0.0`, requires `PAYGATE_SECRET`, and marks its session cookie Secure. Locally, the default bind address is `127.0.0.1`. Keep `NEAR_NETWORK`, factory account, RPC, and wallet network aligned; a testnet vault is not a mainnet vault.
 
 ## Security model
 
@@ -547,9 +590,12 @@ POST requests need the header `X-PayGate: 1`. Account endpoints need a session.
 
 ## Testing
 
+The checks have different trust levels. Unit tests and the local chain demonstrate behavior against controlled fixtures. `check:live` verifies selected public integrations, while `check:deployed` is a read-only smoke check of a hosted site. Neither proves that a mainnet payment was made. The on-chain contract state and transaction receipts remain the final evidence for a payment.
+
 | Command | What it checks | Requires |
 | --- | --- | --- |
-| `npm test` | 28 tests: job rules, workspace caps, cross-chain payees, NEAR services, encryption, NEP-413, server security, rate limits, startup refusals, alerts, file store | Nothing |
+| `npm test` | Job rules, receipt integrity, workspace caps, cross-chain payees, NEAR services, encryption, NEP-413, server security, rate limits, startup refusals, alerts, file store | Local HTTP ports |
+| `npm run check:judge` | App tests and on-chain attack demo without rewriting the saved log | NEAR sandbox |
 | `cd contract && cargo test` | 41 vault tests: limits, allowlist, approvals, freeze, failed-transfer recovery, USDC, external payouts, spare NEAR, closing in batches | Rust 1.97.1 |
 | `cd contract/factory && cargo test` | 12 factory tests: names, deposits, agent funding, code hash, retiring | Rust 1.97.1 |
 | `npm run demo:attack` | 12 attacks against a real local node | NEAR sandbox |
@@ -574,6 +620,19 @@ POST requests need the header `X-PayGate: 1`. Account endpoints need a session.
 - Data deletion and the mobile layout.
 
 Install Chromium with `npx playwright install chromium`. On macOS you can use an installed Chrome instead by prefixing commands with `CHROME_PATH='/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'`.
+
+### Verify the core claims yourself
+
+| Claim | Reproduce it | What to look for |
+| --- | --- | --- |
+| A stolen agent key cannot pay an unapproved account or change owner controls | `npm run demo:attack` | Twelve attempted actions report `BLOCKED`; the attacker receives 0 NEAR on the local node. Inspect the corresponding contract checks instead of relying on the summary line alone. |
+| The owner can create a vault without giving PayGate an owner key | Follow [Judge quickstart B](#judge-quickstart) | The wallet signs `create_vault`; the resulting vault and agent are separate accounts and the agent has a method-limited key. |
+| Small payments and large payments take different paths | Create jobs on both sides of the automatic limit | One produces an on-chain payment after the agent request; the other remains held until a separate owner-signed approval. |
+| A failed transfer does not consume a job or daily budget | Run the vault contract tests | Failure callbacks restore the pending ledger and spent counters; the test checks state after the callback. |
+| A receipt corresponds to a real transaction | Open **Evidence** for a paid local or testnet job | Follow the transaction link and compare sender, receiver, amount and success status. The hash-linked receipt alone is not proof. |
+| The deployed page is reachable | `npm run check:deployed -- https://trypaygate.xyz` | The public pages and configuration load. This check makes no wallet signature and sends no funds. |
+
+Local chain tests use a stand-in 1Click for cross-chain payouts. The live check obtains a dry 1Click quote, which values an amount but does not settle it. The hosted testnet factory is an earlier NEAR-only release; use the local chain for USDC vault creation and closing until the new factory is deployed to a public network.
 
 ## Project structure
 
@@ -603,6 +662,21 @@ Install Chromium with `npx playwright install chromium`. On macOS you can use an
 └── REPRODUCIBILITY.md      Trust boundaries and how to verify each claim
 ```
 
+### Where to change a feature
+
+| Task | Primary files | Verification |
+| --- | --- | --- |
+| Change a payment limit, approval rule, payee rule or freeze behavior | `contract/src/lib.rs`, then `src/chain.mjs` if the contract interface changes | `cd contract && cargo test`, `npm run test:chain` |
+| Change vault creation, initial funding or agent key permissions | `contract/factory/src/lib.rs`, `scripts/deploy-platform.mjs`, `src/chain.mjs` | Factory tests, `npm run demo:attack`, `npm run test:chain` |
+| Change job states, receipts or payment validation | `src/domain.mjs`, `src/server.mjs` | `npm test`, `npm run test:chain` |
+| Change the customer interface | `public/index.html`, `public/app.js`, `public/style.css` | `npm run test:browser`, `npm run test:chain` |
+| Change sign-in or owner transaction confirmation | `src/server.mjs`, `src/chain.mjs`, `public/callback.js` | `npm test`, `npm run test:chain` |
+| Change NEAR AI, attestation or Intents integrations | `src/near.mjs` | `npm test`, `npm run check:live` |
+| Change storage or key handling | `src/store.mjs`, `src/secrets.mjs` | `npm test`, `npm run test:postgres` |
+| Change container deployment | `Dockerfile`, `.dockerignore`, `src/server.mjs` | Build the image, then `npm run check:deployed -- <url>` after deploying |
+
+The Dockerfile installs production dependencies and copies the server, static `public/` assets and built contract WASM files. `npm start` runs `src/server.mjs`; there is no separate frontend build step. The server serves the browser files directly, so changes to `public/` are visible after redeployment.
+
 ## Roadmap
 
 - **Mainnet launch.** Deploy the factory, then open vault creation ([docs/MAINNET.md](docs/MAINNET.md)).
@@ -627,13 +701,31 @@ Built for **NEAR HACKATHON** (development window 2026-11-01 to 2026-11-14).
 | --- | --- |
 | Development window | The repository's first commit is dated 2026-11-01. Every commit is inside the window, so there is no pre-hackathon baseline |
 | Prior work | None. PayGate is a new project, not an existing product on NEAR or another chain |
-| Tracks it fits | **AI Security & Defense** (`security`): function-call keys, on-chain spending limits, NEAR AI attestation checks. **Agent Economy** (`agents`): agents get paid and pay through vaults, the Agent API and MCP. **Real-World Money** (`realworld`): USDC budgets, NEP-366 meta-transactions, NEAR Intents payouts. **Privacy & Private AI** (`privacy`): NEAR AI Cloud inference with attestation evidence. **Autonomous Business** (`business`): humans set limits; agents spend within them, including cross-chain through NEAR Intents |
+| Submitted tracks | **AI Security & Defense** (`security`): restricted agent keys, on-chain limits and owner approvals. **Agent Economy** (`agents`): job delivery and payment requests over REST and MCP. **Autonomous Business** (`business`): owners set spending rules and agents operate within them. |
 | Network | Testnet. Cross-chain payouts need mainnet, because NEAR Intents has no testnet; they are verified locally with a stand-in 1Click, and `npm run check:live` makes a real dry quote |
-| Hosted demo | https://trypaygate.xyz, online through at least 2026-11-25 |
-| How to verify | [Judge quickstart](#judge-quickstart) |
+| Hosted demo | [trypaygate.xyz](https://trypaygate.xyz) |
+| Submitted demo post | [PayGate demo on X](https://x.com/drained99/status/2120683021720306089) |
+| How to verify | [Judge guide](JUDGES.md) and [quickstart](#judge-quickstart) |
 | Libraries and tools | Server: `near-api-js`, `pg`. Browser: `@hot-labs/near-connect` (bundled). Contracts: `near-sdk`, with `near-contract-standards` only in the local test token. Tests: `near-sandbox`, Playwright. Demo video: Remotion. No template or boilerplate was used |
-| AI disclosure | Most of the code, tests and documentation were written with AI coding assistants (Claude Code), directed and reviewed by the team. The demo video's narration was generated with Higgsfield |
+| AI disclosure | The team used Claude Code and Codex to write, review and test code and documentation. The demo video's narration was generated with Higgsfield |
 | License | [MIT](LICENSE). The repository stays public through judging |
+
+## Troubleshooting
+
+| Symptom | First check |
+| --- | --- |
+| `npm run dev:chain` does not start | Confirm Node.js is at least 22.22.2 and the sandbox binary can download on first run. The command prints the local factory and accounts when ready. |
+| Port 3000 is in use | Stop the existing server or set another `PORT` before starting the local app. |
+| A hosted server exits with a secret error | Set a durable `PAYGATE_SECRET` of at least 32 characters. Store a backup; changing it after customers have saved keys makes those keys unreadable. |
+| A hosted deployment reports an invalid host | Set `PUBLIC_URL` to the exact public origin or use Railway's `RAILWAY_PUBLIC_DOMAIN`. Do not include a path. |
+| Wallet sign-in fails | Confirm the wallet is on the same NEAR network as the app, approve the signed message, and retry with a fresh challenge. Sign-in checks the key against the account on-chain. |
+| Vault creation is unavailable | Check `GET /api/config` for the factory and `ready` state. A missing `PAYGATE_FACTORY` disables creation; the hosted testnet factory supports NEAR vaults only. |
+| A vault cannot pay | Check the live vault balance, payee allowlist, freeze state, per-payment and daily limits, and whether the job has already been paid. A held payment needs owner approval. |
+| Postgres is unavailable | Check `DATABASE_URL` and the database service. Without a configured URL, the server uses local files under `DATA_DIR`; changing stores does not migrate existing customer data automatically. |
+| Cross-chain payout is not shown | It is a mainnet-only integration by default and requires a compatible USDC vault and the factory's external-payout support. Testnet has no NEAR Intents settlement environment. |
+| An attestation check fails | Check that NEAR AI Cloud is reachable and that the returned quote matches the fresh nonce and expected measurement. PayGate's check does not verify Intel's quote signature. |
+
+For a reproducible bug report, include the network, the command or UI step, the exact error, and a transaction hash when one exists. Never include a wallet seed phrase, owner key, agent key, `PAYGATE_SECRET`, or NEAR AI API key. Security issues belong in a private [GitHub advisory](https://github.com/drained69/PayGate/security/advisories/new).
 
 ## License
 

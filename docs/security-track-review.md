@@ -1,0 +1,19 @@
+# NEAR Hackathon security track review
+
+I screened the public [AI Security & Defense directory](https://nearhackathon.com/#projects) on November 12, 2026. It returned 348 entries. This is a judge-style ranking of three direct spending-control competitors selected for closer source review. The event has its own judging process. The review weighs what the contract enforces, what a reviewer can reproduce, and how clearly a user can understand a payment decision. It is a source review, with no independent execution of the competitors' demos.
+
+| Rank | Project | What the code does | Tradeoff |
+| --- | --- | --- | --- |
+| 1 | [Veto](https://github.com/0xdopewilly/veto/tree/953b2b4) | The vault's [verdict path](https://github.com/0xdopewilly/veto/blob/953b2b4/contract/src/lib.rs#L569) checks a guardian-submitted verdict against an approved signing key. In checked mode it rebuilds the request hash. Its proof UI and benchmark give reviewers evidence to inspect. | Checked mode submits the evidence to the chain. Private mode trusts the guardian with the prompt. Model screening can still make mistakes. |
+| 2 | [Banbo](https://github.com/Mhiah/Banbo/tree/8979ec9) | [Origin checks](https://github.com/Mhiah/Banbo/blob/8979ec9/contract/src/lib.rs#L1923) bind a payment to a task, agent, token, payee and remaining task budget. Its tests include an otherwise allowlisted payee that is absent from the task. | The origin policy is configurable. Its stronger guarantees depend on enabling the policy and on how the agent is vouched for or attested. |
+| 3 | [Leash](https://github.com/Mattbusel/leash/tree/7ee76d4) | The [wallet payment path](https://github.com/Mattbusel/leash/blob/7ee76d4/contracts/wallet/src/lib.rs#L274) records structured denial reasons and distinguishes a blocked payment from an approval request. This makes it easier to explain the rule that fired. | The reviewed version handles native NEAR. It bounds its stored decision history and documents that its registry can be gamed by Sybil reporters. |
+
+## Applied to PayGate
+
+PayGate's review screen now shows the full destination and a policy preview for both new requests and held approvals. It surfaces freeze and closing state, allowlist membership, per-payment and daily limits, spendable balance, unconfirmed USDC registration, and whether a held request is still in the vault. The preview uses the last vault read. The deployed contract evaluates the transaction against the state at execution.
+
+On November 13, the directory returned 368 entries. I screened the 20 additions by title and checked public sources for the closest matches. The ranking above remains my shortlist for PayGate's product review. Veto's proof page, Banbo's task binding, and Leash's decision history informed a second change: each receipt now has a **Verify payment** action. PayGate queries NEAR RPC for the finalized transaction, checks the saved job, vault, payee and amount against the payment event, and inspects the transfer receipts. For cross-chain payouts the check stops at the NEAR deposit. The destination result is available separately through **Check delivery**.
+
+PayGate's restricted agent key and vault limits provide a small, deterministic payment boundary. The next security improvement to investigate is a contract-enforced, owner-defined grant for an individual job, with a payee, amount and expiry. This would address the case where a compromised agent uses an already allowlisted payee within the vault-wide limits. It would require a new vault version and a migration design for existing keyless vaults.
+
+Owners who want to eliminate unattended transfers can now set the automatic limit to zero from PayGate. The existing vault contract enforces the setting, so a compromised agent can request a payment but needs the owner's wallet to release funds. This also works with manually recorded deliveries and requires no NEAR AI key.
