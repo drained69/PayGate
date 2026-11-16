@@ -16,7 +16,7 @@ try{
  const ownerCall=(methodName,args)=>owner.callFunction({contractId:vault,methodName,args,deposit:1n,gas});
  say('PAYGATE ATTACK DEMO');say('Every step below is a real transaction on a local NEAR node (nearcore 2.14).');say();
  const {keys}=await provider.viewAccessKeyList({accountId:config.agent,blockQuery:{finality:'optimistic'}});
- assert.equal(keys.length,1);const perm=keys[0].access_key.permission.FunctionCall;assert.deepEqual(perm.method_names,['request_payment']);
+ assert.equal(keys.length,1);const perm=keys[0].access_key.permission.FunctionCall;assert.deepEqual(perm.method_names,['request_payment']);assert.equal(perm.receiver_id,vault);
  say(`Agent ${config.agent} holds ${keys.length} key: it can only call ${perm.method_names[0]} on ${perm.receiver_id}.`);
  say('Rules: 0.1 NEAR paid automatically, 0.5 NEAR maximum per payment, 1 NEAR per day, allowlisted recipients only.');
  const vaultKeys=(await provider.viewAccessKeyList({accountId:vault,blockQuery:{finality:'optimistic'}})).keys;assert.equal(vaultKeys.length,0);say(`Vault ${vault} holds 0 keys, so nobody can replace its code.`);
@@ -41,11 +41,24 @@ try{
  const held=await ask(worker,near('0.3'),'big-1');
  assert.equal(held.status,'pending');assert.equal(await balance(worker),beforeHold);
  say('HELD     0.3 NEAR request is waiting. Nothing moved without the owner.');
- await ownerCall('reject_payment',{id:held.id});say('REJECTED Owner refuses it');
- say();say('A payment to an account that does not exist');await ownerCall('set_recipient',{recipient:'ghost.sandbox',allowed:true});await ask('ghost.sandbox',near('0.02'),'ghost-1');await new Promise(done=>setTimeout(done,3000));assert.equal((await policy()).spent_in_window,near('0.05'));say('REFUNDED The transfer fails, the money returns, and the daily spend is restored');await ownerCall('set_recipient',{recipient:'ghost.sandbox',allowed:false});
- say();say('Worst allowed case: the agent drains small payments to the one allowlisted payee');
+ await ownerCall('reject_payment',{id:held.id});
+ assert.equal(await balance(worker),beforeHold);
+ say('REJECTED Owner refuses it. The payee balance is unchanged.');
+ const approved=await ask(worker,near('0.3'),'big-2');
+ assert.equal(approved.status,'pending');
+ assert.equal(await balance(worker),beforeHold);
+ await ownerCall('approve_payment',{id:approved.id});
+ assert.equal(BigInt(await balance(worker))-BigInt(beforeHold),BigInt(near('0.3')));
+ say('APPROVED The owner signs a second held request and the payee receives 0.3 NEAR.');
+ say();say('A payment to an account that does not exist');await ownerCall('set_recipient',{recipient:'ghost.sandbox',allowed:true});await ask('ghost.sandbox',near('0.02'),'ghost-1');await new Promise(done=>setTimeout(done,3000));assert.equal((await policy()).spent_in_window,near('0.35'));say('REFUNDED The transfer fails, the money returns, and the daily spend is restored');await ownerCall('set_recipient',{recipient:'ghost.sandbox',allowed:false});
+ say();say('Worst allowed case: the stolen key can still pay the allowlisted payee within the remaining budget');
+ const beforeDrain=BigInt(await balance(worker));
  let paid=0,stop;for(;paid<30;paid++){try{await ask(worker,near('0.1'),`drain-${paid}`)}catch(e){stop=reason(e);break}}
- assert.match(stop||'',/daily limit/);say(`STOPPED  after ${paid} payments, ${show((await policy()).spent_in_window)} spent today\n         ${stop}`);say();
+ assert.match(stop||'',/daily limit/);
+ assert.equal(paid,6);
+ assert.equal(BigInt(await balance(worker))-beforeDrain,BigInt(near('0.6')));
+ assert.equal((await policy()).spent_in_window,near('0.95'));
+ say(`STOPPED  after ${paid} payments of 0.1 NEAR, with 0.95 NEAR spent today\n         ${stop}`);say();
  say('Owner responds');await ownerCall('set_frozen',{frozen:true});say('FROZEN   Owner freezes the vault');
  await blocked('Agent tries to pay the real payee while frozen',/frozen/,()=>ask(worker,near('0.01'),'after-freeze'));
  const before=await balance(owner.accountId),left=(await policy()).balance;await ownerCall('withdraw',{amount:left});assert.ok(BigInt(await balance(owner.accountId))>BigInt(before));say(`RESCUED  Owner withdraws ${show(left)} while frozen`);say();

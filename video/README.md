@@ -28,7 +28,7 @@ To change a line: edit `src/script.ts`, regenerate that clip with the same voice
 
 ## What is real and what is example data
 
-Real, from `docs/attack-demo-log.txt`: the 12 blocked attempts and their reasons, "12 blocked" and "Attacker received 0 NEAR". The only change is the attacker's name, from `attacker.sandbox` to `attacker.testnet`. The attack screen also states the limit of the protection, as the log does: a stolen agent key can still spend up to the daily limit, only to listed payees.
+The attack segment draws on the 12 blocked attempts in [the local NEAR sandbox log](../docs/attack-demo-log.txt). The submitted video displays `attacker.testnet` in its recreated brief. The current video source restores `attacker.sandbox` and labels the attack results and recreated screens on-screen. A stolen agent key can still spend up to the daily limit to listed payees.
 
 The video says PayGate runs on NEAR testnet, which is where the hosted app is. The closing line was cut from the original take, which mentioned mainnet.
 

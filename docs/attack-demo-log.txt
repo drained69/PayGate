@@ -38,20 +38,21 @@ BLOCKED  Forge the refund callback to reset the daily spend
 
 A large request is held for a person
 HELD     0.3 NEAR request is waiting. Nothing moved without the owner.
-REJECTED Owner refuses it
+REJECTED Owner refuses it. The payee balance is unchanged.
+APPROVED The owner signs a second held request and the payee receives 0.3 NEAR.
 
 A payment to an account that does not exist
 REFUNDED The transfer fails, the money returns, and the daily spend is restored
 
-Worst allowed case: the agent drains small payments to the one allowlisted payee
-STOPPED  after 9 payments, 0.9500 NEAR spent today
+Worst allowed case: the stolen key can still pay the allowlisted payee within the remaining budget
+STOPPED  after 6 payments of 0.1 NEAR, with 0.95 NEAR spent today
          Amount exceeds the daily limit
 
 Owner responds
 FROZEN   Owner freezes the vault
 BLOCKED  Agent tries to pay the real payee while frozen
          Payments are frozen
-RESCUED  Owner withdraws 2.0883 NEAR while frozen
+RESCUED  Owner withdraws 2.0914 NEAR while frozen
 
 Result: the attacker received 0 NEAR. Balance went from 1.0000 NEAR to 0.9997 NEAR (gas only).
 Limit of this protection: a stolen agent key can still spend up to the daily limit, but only to allowlisted recipients.

@@ -1,5 +1,5 @@
 import {createHash,randomBytes} from 'node:crypto';
-const env=process.env,cloud=()=>env.NEAR_AI_URL||'https://cloud-api.near.ai/v1',oneClick=()=>env.ONECLICK_URL||'https://1click.chaindefuser.com/v0',model=()=>env.NEAR_AI_MODEL||'qwen/qwen3.5-397b-a17b';
+const env=process.env,cloud=()=>env.NEAR_AI_URL||'https://cloud-api.near.ai/v1',oneClick=()=>env.ONECLICK_URL||'https://1click.chaindefuser.com/v0',model=()=>env.NEAR_AI_MODEL||'Qwen/Qwen3.6-35B-A3B-FP8';
 const WNEAR='nep141:wrap.near',USDC_NEAR='nep141:17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad2011e36133a1';
 const sha=v=>createHash('sha256').update(v).digest('hex');
 async function request(url,options,ms,label){let r;try{r=await fetch(url,{...options,signal:AbortSignal.timeout(ms)})}catch{throw Error(label+' is unreachable.')}if(!r.ok)throw Error(`${label} returned ${r.status}.`);return r}
@@ -53,8 +53,8 @@ export function checkReport(report,nonce){
   {label:'Report is an Intel TDX v4 quote',pass:tdx},
   {label:'Quote is bound to the nonce this server generated',pass:tdx&&quoteBytes.subarray(568,632).toString('hex')===g.signing_address+nonce},
   {label:'Quote matches the gateway configuration in the report',pass:tdx&&typeof compose==='string'&&quoteBytes.subarray(232,280).toString('hex')==='01'+sha(compose)+'00'.repeat(15)},
-  {label:'Model report answers the same nonce',pass:m?.nonce===nonce}
- ],signingAddress:g?.signing_address||null,quoteSha256:quoteBytes.length?sha(quoteBytes):null,model:m?.model||model(),modelProvider:m?.provider||null,tcbStatus:m?.tcb_status||null,gpuVerdict:m?.gpu_verdict||null,dcapVerified:false};
+  {label:'Model report echoes the request nonce',pass:(m?.request_nonce??m?.nonce)===nonce}
+ ],signingAddress:g?.signing_address||null,quoteSha256:quoteBytes.length?sha(quoteBytes):null,model:m?.model_name??m?.model??model(),modelProvider:m?.provider||null,tcbStatus:m?.tcb_status||null,gpuVerdict:m?.gpu_verdict||null,dcapVerified:false};
 }
 export async function attestation(){
  const nonce=randomBytes(32).toString('hex'),url=new URL(cloud()+'/attestation/report');

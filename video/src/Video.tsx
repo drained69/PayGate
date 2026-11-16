@@ -58,6 +58,7 @@ const Device: React.FC<{ scene: SceneId; view: SceneView }> = ({ scene, view }) 
   const k = DEVICE.w / 1280, vh = (DEVICE.h - 52) / k;
   return (
     <div style={{ position: 'absolute', left: DEVICE.x, top: DEVICE.y, transform: `scale(${0.94 + 0.06 * settle}) translateY(${(1 - settle) * 24}px)`, transformOrigin: '50% 30%', filter: dim ? `brightness(${1 - 0.5 * dim}) blur(${dim * 4}px)` : undefined }}>
+      {dim === 0 && <div style={{ position: 'absolute', bottom: '100%', right: 0, marginBottom: 10, color: INK, fontFamily: 'DM Sans', fontSize: 20, fontWeight: 600 }}>Recreated walkthrough with example data</div>}
       <BrowserFrame w={DEVICE.w} h={DEVICE.h} url={view.url}>
         <Viewport key={scene} scene={scene} w={1280} h={vh} scale={k} keys={view.keys.wide} overlay={view.overlay} mobile={false}>{view.content}</Viewport>
       </BrowserFrame>

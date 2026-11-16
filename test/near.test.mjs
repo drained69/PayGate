@@ -16,6 +16,16 @@ const changed=report(nonce);changed.gateway_attestation.info.tcb_info.app_compos
 const forged=report(nonce);forged.gateway_attestation.intel_quote='00'.repeat(700);assert.equal(checkReport(forged,nonce).checks[0].pass,false);
 assert.equal(checkReport({},nonce).checks.some(c=>c.pass),false);
 const text=report(nonce);text.gateway_attestation.info.tcb_info=JSON.stringify(text.gateway_attestation.info.tcb_info);assert.equal(checkReport(text,nonce).checks[2].pass,true);});
+test('attestation reads the current model name and request nonce',()=>{
+ const modelReport={model_name:'Qwen/Qwen3.6-35B-A3B-FP8',request_nonce:nonce};
+ const payload=report(nonce,{model_attestations:[modelReport]});
+ const result=checkReport(payload,nonce);
+ assert.equal(result.model,modelReport.model_name);
+ assert.ok(result.checks.every(c=>c.pass));
+ modelReport.nonce=nonce;
+ modelReport.request_nonce='ef'.repeat(32);
+ assert.equal(checkReport(payload,nonce).checks[3].pass,false);
+});
 test('attestation generates a fresh nonce for every request',async()=>{const [a,b]=await Promise.all([attestation(),attestation()]);assert.notEqual(a.nonce,b.nonce);assert.ok(a.checks.every(c=>c.pass));});
 test('inference returns the delivery with its hashes and signature',async()=>{const d=await deliver({title:'Report',brief:'Prepare report'},'test-key-paygate');await assert.rejects(deliver({title:'R',brief:'B'},'wrong'),/401/);assert.equal(d.inference.chatId,'chatcmpl-stub');assert.equal(d.inference.signature.signature,'0xstub');assert.match(d.text,/Stub delivery/);assert.match(stub.seen.chats.at(-1).messages[0].content,/PayGate/)});
 test('integration list reports whether the customer has a key',()=>{assert.equal(integrations(true)[0].state,'live');assert.equal(integrations(false)[0].state,'off')});
